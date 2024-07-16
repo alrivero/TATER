@@ -1,66 +1,32 @@
 import torch
-from datasets.lrs3_dataset import get_datasets_LRS3
-from datasets.mead_dataset import get_datasets_MEAD
-from datasets.mead_sides_dataset import get_datasets_MEAD_sides
-from datasets.ffhq_dataset import get_datasets_FFHQ
-from datasets.celeba_dataset import get_datasets_CelebA
+from datasets.iHiTOP_dataset import get_datasets_iHiTOP
 from datasets.mixed_dataset_sampler import MixedDatasetBatchSampler
 import os
 
 
 def load_dataloaders(config):
-
     # ----------------------- initialize datasets ----------------------- #
-    train_dataset_LRS3, val_dataset_LRS3, test_dataset_LRS3 = get_datasets_LRS3(config)
-    train_dataset_MEAD, val_dataset_MEAD, test_dataset_MEAD = get_datasets_MEAD(config)
-    train_dataset_MEAD_sides, val_dataset_MEAD_sides, test_dataset_MEAD_sides = get_datasets_MEAD_sides(config)
-    train_dataset_ffhq = get_datasets_FFHQ(config)
-    train_dataset_celeba = get_datasets_CelebA(config)
-
-    
+    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP = get_datasets_iHiTOP(config)
     dataset_percentages = {
-        'LRS3': config.dataset.LRS3_percentage,
-        'MEAD': config.dataset.MEAD_percentage,
-        'FFHQ': config.dataset.FFHQ_percentage,
-        'CELEBA': config.dataset.CelebA_percentage,
-        'MEAD_sides': config.dataset.MEAD_sides_percentage
+        'iHiTOP': 1.0
     }
-
     
-    train_dataset = torch.utils.data.ConcatDataset([train_dataset_LRS3, 
-                                                    train_dataset_MEAD, 
-                                                    train_dataset_ffhq, 
-                                                    train_dataset_celeba,
-                                                    train_dataset_MEAD_sides, 
-                                                    ])
-    
-    sampler = MixedDatasetBatchSampler([len(train_dataset_LRS3),
-                                        len(train_dataset_MEAD), 
-                                        len(train_dataset_ffhq), 
-                                        len(train_dataset_celeba),
-                                        len(train_dataset_MEAD_sides)
+    train_dataset = train_dataset_iHiTOP
+    sampler = MixedDatasetBatchSampler([
+                                        len(train_dataset_iHiTOP)
                                         ], 
                                        list(dataset_percentages.values()), 
                                        config.train.batch_size, config.train.samples_per_epoch)
-    
     def collate_fn(batch):
         # filter none
         batch = [b for b in batch if b is not None]
-        return torch.utils.data.dataloader.default_collate(batch)
-        
+        return batch
     
-    val_dataset = torch.utils.data.ConcatDataset([val_dataset_LRS3, val_dataset_MEAD])
-                                             
+    val_dataset = torch.utils.data.ConcatDataset([val_dataset_iHiTOP])
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.num_workers, collate_fn=collate_fn)
-    
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=config.train.batch_size,
                                                 num_workers=config.train.num_workers, shuffle=False, drop_last=True, collate_fn=collate_fn)
-
     return train_loader, val_loader
-
-
-
-
 
 def linear_interpolate(landmarks, start_idx, stop_idx):
     """linear_interpolate.

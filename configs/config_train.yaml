@@ -5,13 +5,14 @@ device: cuda:0
 image_size: 224
 K: 1 # temporal sequence length - no temporal data used here
 deterministic: False
+seed: 13809409134
 
 train:
 
   lr: 1e-3
   num_epochs: 50
-  batch_size: 32
-  num_workers: 8
+  batch_size: 1
+  num_workers: 0 # Using multiprocessing in Dataset
   log_path: logs/1
   log_losses_every: 10
   visualize_every: 50
@@ -60,33 +61,22 @@ render:
   full_head: False  # full FLAME rendering
 
 dataset:
-  LRS3_path: /gpu-data4/filby/LRS3
-  LRS3_landmarks_path: /gpu-data4/filby/LRS3_landmarks
+  iHiTOP_hdf5_path: /local/PTSD_STOP/TATER/test.hdf5
+  iHiTOP_dataset_size: 4
+  iHiTOP_aug_workers: 16
+  iHiTOP_frame_step: 2
 
-  MEAD_path: /gpu-data4/filby/MEAD_preprocessed/MEAD_front/videos
-  MEAD_fan_landmarks_path: /gpu-data4/filby/MEAD_preprocessed/MEAD_front/fan_landmarks_hhj1897
-  MEAD_mediapipe_landmarks_path: /gpu-data4/filby/MEAD_preprocessed/MEAD_front/mediapipe_landmarks
-
-  FFHQ_path: /gpu-data4/filby/FFHQ256/ffhq256
-  FFHQ_fan_landmarks_path: /gpu-data4/filby/FFHQ256/fan_landmarks_hhj1897
-  FFHQ_mediapipe_landmarks_path: /gpu-data4/filby/FFHQ256/mediapipe_landmarks
-
-  CelebA_path: /gpu-data4/filby/CelebA/img_align_celeba
-  CelebA_fan_landmarks_path: /gpu-data4/filby/CelebA/fan_landmarks_hhj1897
-  CelebA_mediapipe_landmarks_path: /gpu-data4/filby/CelebA/mediapipe_landmarks
-
-  BUPT_path: /gpu-data4/filby/BalancedFace/race_per_7000
-  BUPT_fan_landmarks_path: /gpu-data4/filby/BalancedFace/fan_landmarks_hhj1897
-  BUPT_mediapipe_landmarks_path: /gpu-data4/filby/BalancedFace/mediapipe_landmarks
-
-  MEAD_sides_path: /gpu-data4/filby/MEAD_preprocessed
+  # percentage of data to use for train val test
+  iHiTOP_train_percentage: 0.5
+  iHiTOP_val_percentage: 0.25
+  iHiTOP_test_percentage: 0.25
 
   # percentage of data to use for each dataset
-  LRS3_percentage: 0.2
+  LRS3_percentage: 0.0
   LRS3_temporal_sampling: False
-  MEAD_percentage: 0.1 
-  FFHQ_percentage: 0.3 
-  CelebA_percentage: 0.3 
-  MEAD_sides_percentage: 0.1
+  MEAD_percentage: 1.0
+  FFHQ_percentage: 0.0 
+  CelebA_percentage: 0.0 
+  MEAD_sides_percentage: 0.0
   sample_full_video_for_testing: False
 

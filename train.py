@@ -5,6 +5,7 @@ from tqdm import tqdm
 from src.smirk_trainer import SmirkTrainer
 import os
 from datasets.data_utils import load_dataloaders
+import debug
 
 
 def parse_args():
@@ -51,20 +52,21 @@ if __name__ == '__main__':
             loader = train_loader if phase == 'train' else val_loader
             
             for batch_idx, batch in tqdm(enumerate(loader), total=len(loader)):
-                if batch is None:
+                if not batch:
                     continue
 
                 trainer.set_freeze_status(config, batch_idx, epoch)
 
-                for key in batch:
-                    batch[key] = batch[key].to(config.device)
+                for video in batch:
+                    for key in video:
+                        video[key] = video[key].to(config.device)
 
-                outputs = trainer.step(batch, batch_idx, phase=phase)
+                    outputs = trainer.step(video, batch_idx, phase=phase)
 
-                if batch_idx % config.train.visualize_every == 0:
-                    with torch.no_grad():
-                        visualizations = trainer.create_visualizations(batch, outputs)
-                        trainer.save_visualizations(visualizations, f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.jpg", show_landmarks=True)
+                    if batch_idx % config.train.visualize_every == 0:
+                        with torch.no_grad():
+                            visualizations = trainer.create_visualizations(video, outputs)
+                            trainer.save_visualizations(visualizations, f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.jpg", show_landmarks=True)
                                     
 
 

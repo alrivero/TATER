@@ -33,10 +33,8 @@ class SmirkTrainer(BaseTrainer):
 
     def step1(self, batch):
         B, C, H, W = batch['img'].shape
-
         encoder_output = self.smirk_encoder(batch['img'])
         
-
         with torch.no_grad():
             base_output = self.base_encoder(batch['img'])
 

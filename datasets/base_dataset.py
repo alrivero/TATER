@@ -2,6 +2,8 @@ import torch.utils.data
 from skimage.transform import estimate_transform, warp
 import albumentations as A
 import numpy as np
+import torchvision.transforms as transforms
+import torch.nn.functional as F
 from skimage import transform as trans
 import cv2
 
@@ -32,6 +34,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.config = config
         self.image_size = config.image_size
         self.test = test
+        self.prescale = config.train.train_scale_max
 
         if not self.test:
             self.scale = [config.train.train_scale_min, config.train.train_scale_max] 
@@ -120,6 +123,21 @@ class BaseDataset(torch.utils.data.Dataset):
 
 
         return data_dict
+    
+    def get_larger_median_resolution(images):
+        resolutions = [(img.shape[1], img.shape[2]) for img in images]  # Get (height, width) for each image
+        heights, widths = zip(*resolutions)
+        median_height = int(torch.median(torch.tensor(heights)).item())
+        median_width = int(torch.median(torch.tensor(widths)).item())
+        larger_median = max(median_height, median_width)
+        return larger_median, larger_median
+
+    def resize_images_to_median(images, target_size):
+        resized_images = []
+        for img in images:
+            resized_img = F.interpolate(img.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False)
+            resized_images.append(resized_img.squeeze(0))
+        return resized_images
 
     def prepare_data(self, image, landmarks_fan, landmarks_mediapipe):
         image = cv2.cvtColor(image,cv2.COLOR_BGR2RGB)
@@ -191,8 +209,6 @@ class BaseDataset(torch.utils.data.Dataset):
         image = image/255.
         mica_image = cv2.warpAffine(image, tform, (112, 112), borderValue=0.0)
         mica_image = mica_image.transpose(2,0,1)
-
-
 
         image = torch.from_numpy(cropped_image).type(dtype = torch.float32) 
         masked_image = torch.from_numpy(masked_cropped_image).type(dtype = torch.float32)

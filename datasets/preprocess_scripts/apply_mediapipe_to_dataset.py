@@ -11,11 +11,8 @@ import argparse
 # Initialize the argument parser
 parser = argparse.ArgumentParser(description='Process images/videos with MediaPipe.')
 parser.add_argument('--input_dir', type=str, required=True, help='Input directory path')
-parser.add_argument('--output_dir', type=str, required=True, help='Output directory path')
-parser.add_argument('--vis_dir', type=str, help='Directory to save visualizations')
 parser.add_argument('--num_processes', type=int, default=16, help='Number of processes to use for processing')
 args = parser.parse_args()
-
 
 # Function to process an image
 def process_image(image_file, output_file, vis_file, face_detector):
@@ -86,13 +83,13 @@ def process_video(video_file, output_file, vis_file, face_detector):
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     np.save(output_file, np.array(frame_landmarks))
 
-
 # Function to process a file
 def process_file(root, file_name, face_detector):
     input_path = os.path.join(root, file_name)
     rel_path = os.path.relpath(input_path, args.input_dir)
-    output_path = os.path.join(args.output_dir, os.path.splitext(rel_path)[0] + '.npy')
-    vis_path = os.path.join(args.vis_dir, rel_path) if args.vis_dir else None
+    video_dir = os.path.join(args.input_dir, os.path.dirname(os.path.dirname(rel_path)))
+    output_path = os.path.join(video_dir, 'mediapipe_landmarks', os.path.splitext(file_name)[0] + '.npy')
+    vis_path = os.path.join(video_dir, 'mediapipe_landmarks_vis', file_name)
 
     if file_name.lower().endswith(('.jpg', '.png')):
         process_image(input_path, output_path, vis_path, face_detector)
