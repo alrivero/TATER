@@ -31,8 +31,8 @@ class iHiTOPDataset(BaseVideoDataset):
 
         video_dict["img"] = video_dict["img"][:, dw:dw + ws, dh:dh + hs]
         video_dict["mask"] = video_dict["mask"][:, dw:dw + ws, dh:dh + hs]
-        video_dict["landmarks_fan"] -= (2 * ws)
-        video_dict["landmarks_mp"] -= (2 * ws)
+        video_dict["landmarks_fan"] -= dw
+        video_dict["landmarks_mp"] -= dw
 
     @staticmethod
     def process_frame(args):
@@ -56,6 +56,8 @@ class iHiTOPDataset(BaseVideoDataset):
                 sampled_value = sampled_value[sampled_idxs]
 
                 video_dict[key] = sampled_value
+
+        import pdb; pdb.set_trace()
 
         # Resize data based on random or fixed scale
         if isinstance(self.scale, list):
@@ -94,6 +96,7 @@ class iHiTOPDataset(BaseVideoDataset):
         video_dict["landmarks_mp"] = np.concatenate(new_mp_lmks)
         video_dict["mask"] = np.concatenate(new_masks)
 
+        import pdb; pdb.set_trace()
         # Misc processing
         video_dict["landmarks_fan"][:, :, :2] = video_dict["landmarks_fan"][:, :, :2] / self.image_size * 2 - 1
         video_dict["landmarks_mp"][:, :, :2] = video_dict["landmarks_mp"][:, :, :2] / self.image_size * 2 - 1

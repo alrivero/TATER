@@ -172,10 +172,6 @@ def prepare_data(image, landmarks_fan, landmarks_mediapipe, crop_res):
 
     cropped_landmarks_mediapipe = cropped_landmarks_mediapipe[mediapipe_indices,:2]
 
-    cropped_landmarks_fan[:,:2] = cropped_landmarks_fan[:,:2]/crop_res * 2  - 1
-    cropped_landmarks_mediapipe[:,:2] = cropped_landmarks_mediapipe[:,:2]/crop_res * 2  - 1
-
-
     # ----------- mica images ---------------- #
     landmarks_arcface_crop = landmarks_fan[[36,45,32,48,54]].copy()
     landmarks_arcface_crop[0] = (landmarks_fan[36] + landmarks_fan[39])/2
