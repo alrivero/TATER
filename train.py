@@ -2,7 +2,7 @@ import sys
 from omegaconf import OmegaConf
 import torch
 from tqdm import tqdm
-from src.smirk_trainer import SmirkTrainer
+from src.tater_trainer import TATERTrainer
 import os
 from datasets.data_utils import load_dataloaders
 import debug
@@ -13,7 +13,7 @@ def parse_args():
 
     OmegaConf.set_struct(conf, True)
 
-    sys.argv = [sys.argv[0]] + sys.argv[2:] # Remove the configuration file name from sys.argv
+    sys.argv = [sys.argv[0]] + sys.argv[2:]  # Remove the configuration file name from sys.argv
 
     conf.merge_with_cli()
     return conf
@@ -33,7 +33,7 @@ if __name__ == '__main__':
 
     train_loader, val_loader = load_dataloaders(config)
 
-    trainer = SmirkTrainer(config)
+    trainer = TATERTrainer(config)
     trainer = trainer.to(config.device)
 
     if config.resume:
@@ -42,9 +42,7 @@ if __name__ == '__main__':
     # after loading, copy the base encoder 
     # this is used for regularization w.r.t. the base model as well as to compare the results    
     trainer.create_base_encoder()
-
-    for epoch in range(config.train.resume_epoch, config.train.num_epochs):
-        
+    for epoch in range(config.train.resume_epoch, config.train.num_epochs):        
         # restart everything at each epoch!
         trainer.configure_optimizers(len(train_loader))
 
@@ -52,23 +50,35 @@ if __name__ == '__main__':
             loader = train_loader if phase == 'train' else val_loader
             
             for batch_idx, batch in tqdm(enumerate(loader), total=len(loader)):
-                if not batch:
-                    continue
+                try:
+                    if not batch:
+                        continue
 
-                trainer.set_freeze_status(config, batch_idx, epoch)
+                    # Move batch to the appropriate device
+                    trainer.set_freeze_status(config, batch_idx, epoch)
+                    for key in batch:
+                        if torch.is_tensor(batch[key][0]):
+                            for i in range(len(batch[key])):
+                                batch[key][i] = batch[key][i].to(config.device)
 
-                for video in batch:
-                    for key in video:
-                        video[key] = video[key].to(config.device)
+                    if batch_idx % 50 == 0:
+                        print(trainer.tater.exp_transformer.attention_blocks[0].linear1.weight.unique())
+                        print(trainer.tater.exp_layer.weight.unique())
 
-                    outputs = trainer.step(video, batch_idx, phase=phase)
+                    if batch_idx % 200 == 0:
+                        print(trainer.tater.exp_transformer.attention_blocks[0].linear1.weight.unique())
+                        print(trainer.tater.exp_layer.weight.unique())
+
+                    # Perform training/validation step
+                    outputs = trainer.step(batch, batch_idx, epoch, phase=phase)
 
                     if batch_idx % config.train.visualize_every == 0:
-                        with torch.no_grad():
-                            visualizations = trainer.create_visualizations(video, outputs)
-                            trainer.save_visualizations(visualizations, f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.jpg", show_landmarks=True)
-                                    
+                        visualizations = trainer.create_visualizations(batch, outputs)
+                        trainer.save_visualizations(visualizations, f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.jpg", show_landmarks=True)
 
+                except Exception as e:
+                    print(f"Error loading batch_idx {batch_idx}!")
+                    print(e)
 
-        if epoch % config.train.save_every == 0:
-            trainer.save_model(trainer.state_dict(), os.path.join(config.train.log_path, 'model_{}.pt'.format(epoch)))
+                if batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1:
+                    trainer.save_model(trainer.state_dict(), os.path.join(config.train.log_path, 'model_{}.pt'.format(batch_idx)))

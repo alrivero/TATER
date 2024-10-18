@@ -14,7 +14,7 @@ class BaseVideoDataset(torch.utils.data.Dataset):
         self.config = config
         self.test = test
         self.image_size = config.image_size
-        self.prescale = config.train.train_scale_max
+        self.prescale = config.train.stored_scale
 
         if not self.test:
             self.scale = [config.train.train_scale_min, config.train.train_scale_max]

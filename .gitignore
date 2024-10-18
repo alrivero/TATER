@@ -1,4 +1,10 @@
+old_logs/
+old_logs_2/
+other/
+pretrianed_models/
 logs/
+data/
+data_idxs/
 trained_models/
 pretrained_models/
 assets/expression_templates_famos

@@ -41,11 +41,11 @@ class BaseTrainer(nn.Module):
                 g['lr'] = encoder_scale * self.config.train.lr
         else:
             params = []
-            if self.config.train.optimize_expression:
+            if self.config.train.optimize_base_expression:
                 params += list(self.smirk_encoder.expression_encoder.parameters()) 
-            if self.config.train.optimize_shape:
+            if self.config.train.optimize_base_shape:
                 params += list(self.smirk_encoder.shape_encoder.parameters())
-            if self.config.train.optimize_pose:
+            if self.config.train.optimize_base_pose:
                 params += list(self.smirk_encoder.pose_encoder.parameters())
 
             self.encoder_optimizer = torch.optim.Adam(params, lr= encoder_scale * self.config.train.lr)

@@ -3,6 +3,61 @@ from datasets.iHiTOP_dataset import get_datasets_iHiTOP
 from datasets.mixed_dataset_sampler import MixedDatasetBatchSampler
 import os
 
+import torch
+
+# def iHiTOP_collate(batch):
+#     # Extract the "img" tensors and other keys
+#     imgs = [item['img'] for item in batch]
+#     max_len = max([img.shape[0] for img in imgs])  # Get the max number of tokens
+
+#     # Initialize tensors for the batch
+#     img_batch = torch.zeros((len(batch), max_len, *imgs[0].shape[1:]), dtype=imgs[0].dtype)
+#     attention_mask = torch.zeros((len(batch), max_len), dtype=torch.bool)
+
+#     # Process each item in the batch
+#     for i, item in enumerate(batch):
+#         img_len = item['img'].shape[0]
+#         img_batch[i, :img_len] = item['img']  # Add image tensor with padding if necessary
+#         attention_mask[i, :img_len] = 1  # Set the attention mask to True for valid tokens
+
+#     # Now, combine any additional keys
+#     combined_batch = {'img': img_batch, 'attention_mask': attention_mask}
+
+#     list_keys = ['text', 'removed_frames', 'text', 'tokens', 'flag_landmarks_fan']
+#     for key in batch[0].keys():
+#         if key == 'img':
+#             continue  # Already handled the 'img' key
+#         elif key in list_keys:
+#             combined_batch[key] = [item[key] for item in batch]
+#         elif key == 'audio':
+#             # Handle the audio key
+#             audios = [item['audio'] for item in batch]
+#             audio_lens = [audio.shape[0] for audio in audios]
+#             max_audio_len = max(audio_lens)  # Get the max audio length
+
+#             # Pad audio tensors to max_audio_len and store their lengths
+#             audio_batch = torch.zeros((len(batch), max_audio_len), dtype=audios[0].dtype)
+#             for i, audio in enumerate(audios):
+#                 audio_len = audio.shape[0]
+#                 audio_batch[i, :audio_len] = audio  # Pad audio if necessary
+
+#             combined_batch['audio'] = audio_batch
+#             combined_batch['audio_len'] = torch.tensor(audio_lens)  # Store original audio lengths
+
+#         else:
+#             values = [item[key][None] for item in batch]
+
+#             # Pad the first dimension if necessary
+#             padded_values = []
+#             for value in values:
+#                 padding = (0,) * (2 * (value.ndim - 1)) + (0, max_len - value.shape[0])
+#                 padded_value = torch.nn.functional.pad(value, padding)
+#                 padded_values.append(padded_value)
+#             stacked = torch.stack(padded_values, dim=0)
+
+#             combined_batch[key] = stacked
+
+#     return combined_batch
 
 def load_dataloaders(config):
     # ----------------------- initialize datasets ----------------------- #
@@ -16,11 +71,13 @@ def load_dataloaders(config):
                                         len(train_dataset_iHiTOP)
                                         ], 
                                        list(dataset_percentages.values()), 
-                                       config.train.batch_size, config.train.samples_per_epoch)
+                                       config.train.batch_size, len(train_dataset_iHiTOP))
     def collate_fn(batch):
-        # filter none
-        batch = [b for b in batch if b is not None]
-        return batch
+        combined_batch = {}
+        for key in batch[0].keys():
+            combined_batch[key] = [b[key] for b in batch]
+
+        return combined_batch
     
     val_dataset = torch.utils.data.ConcatDataset([val_dataset_iHiTOP])
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.num_workers, collate_fn=collate_fn)

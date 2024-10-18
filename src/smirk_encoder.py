@@ -97,14 +97,13 @@ class ExpressionEncoder(nn.Module):
             
         features = F.adaptive_avg_pool2d(features, (1, 1)).squeeze(-1).squeeze(-1)
 
-
         parameters = self.expression_layers(features).reshape(img.size(0), -1)
 
         outputs = {}
 
         outputs['expression_params'] = parameters[...,:self.n_exp]
         outputs['eyelid_params'] = torch.clamp(parameters[...,self.n_exp:self.n_exp+2], 0, 1)
-        outputs['jaw_params'] = torch.cat([F.relu(parameters[...,self.n_exp+2].unsqueeze(-1)), 
+        outputs['jaw_params'] = torch.cat([F.relu(parameters[...,self.n_exp+2].unsqueeze(-1)) * 2, 
                                            torch.clamp(parameters[...,self.n_exp+3:self.n_exp+5], -.2, .2)], dim=-1)
 
         return outputs

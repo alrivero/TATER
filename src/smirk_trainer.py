@@ -145,8 +145,8 @@ class SmirkTrainer(BaseTrainer):
                
    
         loss_first_path = (
-            (shape_losses if self.config.train.optimize_shape else 0) +
-            (expression_losses if self.config.train.optimize_expression else 0) +
+            (shape_losses if self.config.train.optimize_base_shape else 0) +
+            (expression_losses if self.config.train.optimize_base_expression else 0) +
             (landmark_losses) +
             (fuse_generator_losses if self.config.arch.enable_fuse_generator else 0)
         )
@@ -335,13 +335,13 @@ class SmirkTrainer(BaseTrainer):
         utils.freeze_module(self.smirk_encoder.expression_encoder, 'expression encoder')
         
     def unfreeze_encoder(self):
-        if self.config.train.optimize_pose:
+        if self.config.train.optimize_base_pose:
             utils.unfreeze_module(self.smirk_encoder.pose_encoder, 'pose encoder')
         
-        if self.config.train.optimize_shape:
+        if self.config.train.optimize_base_shape:
             utils.unfreeze_module(self.smirk_encoder.shape_encoder, 'shape encoder')
             
-        if self.config.train.optimize_expression:
+        if self.config.train.optimize_base_expression:
             utils.unfreeze_module(self.smirk_encoder.expression_encoder, 'expression encoder')
 
     def step(self, batch, batch_idx, phase='train'):
@@ -376,13 +376,13 @@ class SmirkTrainer(BaseTrainer):
             if not self.config.train.freeze_generator_in_second_path:
                 torch.nn.utils.clip_grad_norm_(self.smirk_generator.parameters(), 0.1)
             
-            self.optimizers_step(step_encoder=not self.config.train.freeze_encoder_in_second_path, 
+            self.optimizers_step(step_encoder=not self.config.train.freeze_base_encoders_in_second_path, 
                                  step_fuse_generator=not self.config.train.freeze_generator_in_second_path)
 
             losses1.update(losses2)
             outputs1.update(outputs2)
 
-            if self.config.train.freeze_encoder_in_second_path:
+            if self.config.train.freeze_base_encoders_in_second_path:
                 self.unfreeze_encoder()
             
             if self.config.train.freeze_generator_in_second_path:
