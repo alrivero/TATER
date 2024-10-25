@@ -14,7 +14,7 @@ train:
   batch_size: 2
   accumulate_steps: 3
   num_workers: 0 # Using multiprocessing in Dataset
-  log_path: logs/train_exp_v2
+  log_path: logs/train_exp_latent_w_phoneme
   log_losses_every: 10
   visualize_every: 50
   mask_ratio: 0.01  # % pixel to be retained inside the face mask
@@ -37,7 +37,7 @@ train:
   loss_weights:
     landmark_loss: 500.0   # landmark loss weight
     perceptual_vgg_loss: 10.0  # RECONSTRUCTION - perceptual vgg loss weight
-    reconstruction_loss: 100.0  # RECONSTRUCTION - l1 loss weight
+    reconstruction_loss: 100.0  # RECONSTRUuCTION - l1 loss weight
     emotion_loss: 0.0  # extra emotion loss weight 
     jaw_regularization: 1.0
     eyelid_regularization: 1.0
@@ -50,12 +50,14 @@ train:
     pose_res_regularization: 1.0
     cycle_loss: 1.0  # CYCLE loss
     mica_loss: 0.0
+    phoneme_loss: 0.0
 
   optimize_base_pose: False
   optimize_base_shape: False
   optimize_base_expression: False  # Do not optimize original network
   optimize_tater: True
   optimize_generator: False
+  optimize_phoneme_classifier: True
 
   # automatically tunable hyperparameters - just declared here
   freeze_encoder_in_second_path: False
@@ -72,15 +74,17 @@ arch:
   enable_fuse_generator: True 
 
   TATER:
-    interp_down_residual: True
-    use_interp_linear_layer: True
+    interp_down_residual: False
+    use_interp_linear_layer: False
     downsample_rate: 3
     apply_linear_after_res: False
 
     Expression:
       use_base_encoder: False
-      use_latent: False
-      linear_size: 56
+      use_linear: True
+      use_latent: True
+      add_to_flame: True
+      linear_size: 960
       init_near_zero: True
       init_scale: 1e-9
 
@@ -93,8 +97,8 @@ arch:
           prob: 0.1
         
         attention:
-          hidden_size: 56
-          hidden_size_2: 112
+          hidden_size: 960
+          hidden_size_2: 1920
           num_attention_heads: 2
           attention_probs_dropout_prob: 0.1
 
@@ -102,7 +106,9 @@ arch:
 
     Shape:
       use_base_encoder: True
+      use_linear: False
       use_latent: False
+      add_to_flame: True
       linear_size: 960
       init_near_zero: True
       init_scale: 1e-9
@@ -125,7 +131,9 @@ arch:
 
     Pose:
       use_base_encoder: True
+      use_linear: False
       use_latent: False
+      add_to_flame: True
       linear_size: 576
       init_near_zero: True
       init_scale: 1e-9
@@ -148,11 +156,32 @@ arch:
 
     text_emb_size: 768
 
+  Phoneme_Classifier:
+    enable: True
+    type: "Linear"
+    use_latent: True
+    Transformer:
+          positional_embedding: "Sinusoidal"
+          num_layers: 2
+
+          final_dropout:
+            enable: False
+            prob: 0.1
+          
+          attention:
+            hidden_size: 56
+            hidden_size_2: 112
+            num_attention_heads: 2
+            attention_probs_dropout_prob: 0.1
+
+            layer_norm_eps: 1e-12
+
+
 render:
   full_head: False  # full FLAME rendering
 
 dataset:
-  iHiTOP_hdf5_path: /local/PTSD_STOP/iHiTOP_TATER_Data/temp
+  iHiTOP_hdf5_path: /local/PTSD_STOP/iHiTOP_Preprocessed/temp
   iHiTOP_aug_workers: 8
   iHiTOP_frame_step: 1
 
@@ -160,9 +189,9 @@ dataset:
   removed_frames_threshold: 0.15
   max_seg_len: 120
   min_seg_len: 9
-  data_idxs: /local/PTSD_STOP/TATER/data_idxs/remove_85_max_120_min_9_v1.npy
-  final_idxs: /local/PTSD_STOP/TATER/final_idxs/train_exp_2.npy
-  bad_files: /local/PTSD_STOP/TATER/final_idxs/bad_train.npy
+  data_idxs: /local/PTSD_STOP/TATER/data_idxs/remove_85_max_120_min_9_new.npy
+  final_idxs: /local/PTSD_STOP/TATER/final_idxs/train_exp_4.npy
+  bad_files: /local/PTSD_STOP/TATER/final_idxs/bad_train_v3.npy
 
   # percentage of data to use for train val test
   iHiTOP_train_percentage: 0.8
