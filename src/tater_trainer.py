@@ -1,5 +1,6 @@
 import copy
 import cv2
+import math
 import random
 import torch.utils.data
 import torch.nn.functional as F
@@ -16,6 +17,7 @@ from torchvision.utils import make_grid
 
 from .smirk_trainer import SmirkTrainer
 from .tater_encoder import TATEREncoder
+from .phoneme_classifier import PhonemeClassifier
 
 class TATERTrainer(SmirkTrainer):
     def __init__(self, config):
@@ -29,12 +31,18 @@ class TATERTrainer(SmirkTrainer):
         
         self.tater = TATEREncoder(self.config, n_exp=self.config.arch.num_expression, n_shape=self.config.arch.num_shape)
         self.smirk_encoder = self.tater  # Backwards compatibility
+        self.using_phoneme_classifier = self.config.arch.Phoneme_Classifier.enable
+        if self.using_phoneme_classifier:
+            self.phoneme_classifier = PhonemeClassifier(config)
+            self.cross_entropy_loss = torch.nn.CrossEntropyLoss()
+            self.use_latent_for_phoneme = self.config.arch.Phoneme_Classifier.use_latent
         
         self.flame = FLAME(n_exp=self.config.arch.num_expression, n_shape=self.config.arch.num_shape)
         self.renderer = Renderer(render_full_head=False)
         self.setup_losses()
 
         self.templates = utils.load_templates()
+        self.l2_loss = torch.nn.MSELoss()
             
         # --------- setup flame masks for sampling --------- #
         self.face_probabilities = masking_utils.load_probabilities_per_FLAME_triangle()
@@ -57,13 +65,18 @@ class TATERTrainer(SmirkTrainer):
             if self.config.train.optimize_tater:
                 if not self.config.arch.TATER.Expression.use_base_encoder:
                     params += list(self.tater.exp_transformer.parameters())
-                    params += list(self.tater.exp_layer.parameters())
+                    if self.config.arch.TATER.Expression.use_linear:
+                        params += list(self.tater.exp_layer.parameters())
                 if not self.config.arch.TATER.Shape.use_base_encoder:
                     params += list(self.tater.shape_transformer.parameters())
-                    params += list(self.tater.shape_layer.parameters())
+                    if self.config.arch.TATER.Shape.use_linear:
+                        params += list(self.tater.shape_layer.parameters())
                 if not self.config.arch.TATER.Pose.use_base_encoder:
                     params += list(self.tater.pose_transformer.parameters())
-                    params += list(self.tater.pose_layer.parameters())
+                    if self.config.arch.TATER.Pose.use_linear:
+                        params += list(self.tater.pose_layer.parameters())
+            if self.using_phoneme_classifier and self.config.train.optimize_phoneme_classifier:
+                params += list(self.phoneme_classifier.parameters()) 
 
             self.encoder_optimizer = torch.optim.Adam(params, lr= encoder_scale * self.config.train.lr)
                 
@@ -123,8 +136,112 @@ class TATERTrainer(SmirkTrainer):
         outputs.update(pose_outputs)
 
         return outputs
+    
+    def pad_and_create_attention_mask(self, phoneme_exp):
+        """
+        Pads sequences in phoneme_exp to the same length and creates an attention mask for a Transformer.
+        The attention mask uses False for valid tokens and True for padded tokens.
+        
+        Args:
+        phoneme_exp (list of tensors): List of tensors, where each tensor has shape (seq_len, feature_dim).
+        
+        Returns:
+        padded_phoneme_exp (tensor): Padded tensor of shape (batch_size, max_length, feature_dim).
+        attention_mask (tensor): Attention mask of shape (batch_size, max_length), where False indicates valid tokens.
+        """
+        # Find the maximum sequence length
+        max_length = max(exp.size(0) for exp in phoneme_exp)
+        
+        # Initialize list to store padded sequences and masks
+        padded_phoneme_exp = []
+        attention_mask = []
+        
+        # Pad each sequence and create the attention mask
+        for exp in phoneme_exp:
+            seq_len = exp.size(0)
+            padding_size = max_length - seq_len
+            
+            if padding_size > 0:
+                # Pad the sequence with zeros along the first dimension (sequence length)
+                padded_exp = torch.nn.functional.pad(exp, (0, 0, 0, padding_size))  # Pad only in the time dimension
+            else:
+                padded_exp = exp  # No padding needed
+            
+            # Create the attention mask (False for valid tokens, True for padding)
+            mask = torch.cat([torch.zeros(seq_len, dtype=torch.bool), torch.ones(padding_size, dtype=torch.bool)])
+            
+            # Store the padded sequence and mask
+            padded_phoneme_exp.append(padded_exp)
+            attention_mask.append(mask)
+        
+        # Convert lists to tensors
+        padded_phoneme_exp = torch.stack(padded_phoneme_exp)  # Shape: (batch_size, max_length, feature_dim)
+        attention_mask = torch.stack(attention_mask).cuda()  # Shape: (batch_size, max_length)
+        
+        return padded_phoneme_exp, attention_mask
+    
+    def compute_mouth_bounding_box(self, mp_upper_inner_lip_idxs, mp_lower_inner_lip_idxs, landmarks, img_height, img_width, scale=1.6):
+        # Get the mouth landmarks
+        mouth_landmarks = landmarks[:, mp_upper_inner_lip_idxs + mp_lower_inner_lip_idxs, :]
 
-    def step1(self, batch, encoder_output, batch_idx):
+        # Map normalized coordinates [-1, 1] to pixel coordinates [0, img_width] for x and [0, img_height] for y
+        mouth_landmarks[:, :, 0] = (mouth_landmarks[:, :, 0] + 1) * (img_width / 2)  # x-coordinate
+        mouth_landmarks[:, :, 1] = (mouth_landmarks[:, :, 1] + 1) * (img_height / 2)  # y-coordinate
+
+        # Find the min and max coordinates for x and y
+        min_coords = mouth_landmarks.min(dim=1).values  # (B, 2)
+        max_coords = mouth_landmarks.max(dim=1).values  # (B, 2)
+
+        # Center of the bounding box
+        center = (min_coords + max_coords) / 2
+
+        # Width and height of the original bounding box
+        width = max_coords[:, 0] - min_coords[:, 0]
+        height = max_coords[:, 1] - min_coords[:, 1]
+
+        # Apply the scaling to width and height
+        scaled_width = width * scale
+        scaled_height = height * scale * 2.0  # Optional extra scaling for height
+
+        # Compute new scaled min and max coordinates
+        new_min = center - torch.stack([scaled_width / 2, scaled_height / 2], dim=1)
+        new_max = center + torch.stack([scaled_width / 2, scaled_height / 2], dim=1)
+
+        # Ensure the bounding box is within image bounds
+        new_min[:, 0] = torch.clamp(new_min[:, 0], min=0, max=img_width)
+        new_min[:, 1] = torch.clamp(new_min[:, 1], min=0, max=img_height)
+        new_max[:, 0] = torch.clamp(new_max[:, 0], min=0, max=img_width)
+        new_max[:, 1] = torch.clamp(new_max[:, 1], min=0, max=img_height)
+
+        return new_min, new_max
+    
+    def crop_mouth_region(self, image, min_coords, max_coords, buffer=5):
+        B, C, H, W = image.shape
+        # Convert coordinates to integer indices
+        min_coords = min_coords.long()
+        max_coords = max_coords.long()
+
+        cropped_mouths = []
+        for b in range(B):
+            x_min, y_min = min_coords[b, 0], min_coords[b, 1]
+            x_max, y_max = max_coords[b, 0], max_coords[b, 1]
+
+            # Add buffer if min == max for x or y
+            if x_min == x_max:
+                x_min = max(0, x_min - buffer)
+                x_max = min(W, x_max + buffer)
+            if y_min == y_max:
+                y_min = max(0, y_min - buffer)
+                y_max = min(H, y_max + buffer)
+
+            # Crop the mouth region from the image
+            cropped_mouth = image[b, :, y_min:y_max, x_min:x_max]
+            cropped_mouths.append(cropped_mouth)
+
+        # Stack the cropped mouth regions
+        return cropped_mouths
+
+    def step1(self, batch, encoder_output, batch_idx, series_len):
         B, C, H, W = batch['img'].shape
         flame_output = self.flame.forward(encoder_output)
         
@@ -227,12 +344,120 @@ class TATERTrainer(SmirkTrainer):
         fuse_generator_losses = losses['perceptual_vgg_loss'] * self.config.train.loss_weights['perceptual_vgg_loss'] + \
                                 losses['reconstruction_loss'] * self.config.train.loss_weights['reconstruction_loss'] + \
                                 losses['emotion_loss'] * self.config.train.loss_weights['emotion_loss']
+        
+        # Mouth-specific losses
+        mp_upper_inner_lip_idxs = [66, 73, 74, 75, 76, 86, 91, 92, 93, 94, 104]
+        mp_lower_inner_lip_idxs = [67, 78, 79, 81, 83, 96, 97, 99, 101]
+
+        mp_distance = flame_output['landmarks_mp'][:, mp_upper_inner_lip_idxs, :].mean(dim=1) - flame_output['landmarks_mp'][:, mp_lower_inner_lip_idxs, :].mean(dim=1)
+        mp_distance = torch.norm(mp_distance, p=2, dim=-1)
+        mp_distance_gt = batch['landmarks_mp'][:, mp_upper_inner_lip_idxs, :].mean(dim=1) - batch['landmarks_mp'][:, mp_lower_inner_lip_idxs, :].mean(dim=1)
+        mp_distance_gt = torch.norm(mp_distance_gt, p=2, dim=-1)
+        fan_distance = flame_output['landmarks_fan'][:, 61:64, :].mean(dim=1) - flame_output['landmarks_fan'][:, 65:68, :].mean(dim=1)
+        fan_distance = torch.norm(fan_distance, p=2, dim=-1)
+        fan_distance_gt = batch['landmarks_fan'][:, 61:64, :].mean(dim=1) - batch['landmarks_fan'][:, 65:68, :].mean(dim=1)
+        fan_distance_gt = torch.norm(fan_distance_gt, p=2, dim=-1)
+
+
+        mp_mouth_loss = self.l2_loss(mp_distance_gt, mp_distance)
+        fan_mouth_loss = self.l2_loss(fan_distance_gt, fan_distance)
+        landmark_mouth_dist_loss = (mp_mouth_loss + fan_mouth_loss)
+        losses['landmark_mouth_dist_loss'] = landmark_mouth_dist_loss
+        landmark_mouth_dist_loss *= self.config.train.loss_weights['landmark_mouth_dist_loss']
+
+        gt_mouth_min, gt_mouth_max = self.compute_mouth_bounding_box(mp_upper_inner_lip_idxs, mp_lower_inner_lip_idxs, batch['landmarks_mp'], 224, 224)
+        render_mouths = self.crop_mouth_region(reconstructed_img, gt_mouth_min, gt_mouth_max)
+        gt_mouths = self.crop_mouth_region(batch['img'], gt_mouth_min, gt_mouth_max)
+
+        mouth_vgg_loss = torch.tensor(0.0).cuda()
+        for render_mouth, gt_mouth in zip(render_mouths, gt_mouths):
+            mouth_vgg_loss += self.vgg_loss(render_mouth[None], gt_mouth[None])
+        mouth_vgg_loss = mouth_vgg_loss / len(render_mouths)
+        losses['mouth_vgg_loss'] = mouth_vgg_loss
+        mouth_vgg_loss *= self.config.train.loss_weights['mouth_vgg_loss']
+
+        # Velocity loss calculation
+        total_sequences = len(series_len)  # Number of sequences (videos) in the batch
+        start_idx = 0
+        velocity_loss = 0.0
+        for i, seq_len in enumerate(series_len):
+            if seq_len <= 1:
+                continue  # No velocity loss for sequences with 1 or fewer frames
+
+            # Extract vertices for the current sequence
+            seq_vertices = flame_output['vertices'][start_idx:start_idx + seq_len, :]  # (seq_len, N)
+
+            # Compute velocity between consecutive frames for this sequence
+            pred_velocity = seq_vertices[1:] - seq_vertices[:-1]  # (seq_len-1, N)
+
+            # Compute L2 loss on the velocity difference (encourages smooth transitions)
+            seq_velocity_loss = F.mse_loss(pred_velocity[1:], pred_velocity[:-1])
+            velocity_loss += seq_velocity_loss / seq_len  # Normalize by sequence length
+
+            start_idx += seq_len  # Move to the next sequence
+
+        # Average velocity loss across all sequences
+        velocity_loss /= total_sequences
+        losses['velocity_loss'] = velocity_loss
+        velocity_loss *= self.config.train.loss_weights['velocity_loss']
+
+        if self.using_phoneme_classifier:
+            phoneme_loss = torch.tensor(0.0).cuda()
+            non_silent = 0
+            video_start = 0
+
+            if self.phoneme_classifier.type == "Linear":
+                for i, video_phonemes in enumerate(batch["phoneme_timestamps"]):
+                    if batch["silent"][i] or len(video_phonemes) == 0:
+                        continue
+
+                    if self.use_latent_for_phoneme:
+                        all_exp = encoder_output["expression_residuals_down"][i]
+                    else:
+                        all_exp = torch.cat([encoder_output["expression_params"], encoder_output["jaw_params"], encoder_output["eyelid_params"]], dim=-1)
+
+                    phoneme_idxs = [int(round((s + e) / 2)) for (_ , _, s, e) in video_phonemes]
+                    phoneme_exp = all_exp[phoneme_idxs]
+                    phoneme_gt = torch.tensor([g for (g, _, _, _) in video_phonemes]).cuda()
+
+                    phoneme_logits = self.phoneme_classifier(phoneme_exp)
+                    phoneme_loss += self.cross_entropy_loss(phoneme_logits, phoneme_gt)
+                    video_start += series_len[i]
+                    non_silent += 1
+                
+                phoneme_loss = phoneme_loss / non_silent if non_silent != 0 else phoneme_loss
+                losses["phoneme_loss"] = phoneme_loss
+                phoneme_loss = self.config.train.loss_weights['phoneme_loss'] * phoneme_loss
+            if self.phoneme_classifier.type == "Transformer":
+                for i, video_phonemes in enumerate(batch["phoneme_timestamps"]):
+                    if batch["silent"][i] or len(video_phonemes) == 0:
+                        continue
+
+                    if self.use_latent_for_phoneme:
+                        all_exp = encoder_output["expression_residuals_down"][i]
+                    else:
+                        all_exp = torch.cat([encoder_output["expression_params"], encoder_output["jaw_params"], encoder_output["eyelid_params"]], dim=-1)
+
+                    all_exp = torch.cat(all_exp)
+                    phoneme_gt = torch.tensor([g for (g, _, _, _) in video_phonemes]).cuda()
+
+                    phoneme_logits = self.phoneme_classifier(phoneme_exp)
+                    phoneme_loss += self.cross_entropy_loss(phoneme_logits, phoneme_gt)
+                    video_start += series_len[i]
+                    non_silent += 1
+                
+                phoneme_loss = phoneme_loss / non_silent if non_silent != 0 else phoneme_loss
+                losses["phoneme_loss"] = phoneme_loss
+                phoneme_loss = self.config.train.loss_weights['phoneme_loss'] * phoneme_loss
                
         loss_first_path = (
             (shape_losses if self.config.train.optimize_base_shape else 0) +
             (expression_losses if self.config.train.optimize_base_expression else 0) +
             (landmark_losses) +
-            (fuse_generator_losses if self.config.arch.enable_fuse_generator else 0)
+            (fuse_generator_losses if self.config.arch.enable_fuse_generator else 0) +
+            (phoneme_loss if self.using_phoneme_classifier else 0) +
+            (landmark_mouth_dist_loss) +
+            (mouth_vgg_loss)
         )
 
         for key, value in losses.items():
@@ -268,7 +493,7 @@ class TATERTrainer(SmirkTrainer):
 
         return templates
 
-    def augment_series(self, img, masks, flame_feats, series_len, augment_scale=0.5):                            
+    def augment_series(self, img, masks, flame_feats, series_len, augment_scale=0.35):                            
         # Handle series
         num_series = len(series_len)
         series_start_idx = 0
@@ -502,7 +727,7 @@ class TATERTrainer(SmirkTrainer):
         for key in to_concat:
             batch[key] = torch.concat(batch[key])
 
-        outputs1, losses1, loss_first_path, encoder_output = self.step1(batch, all_params, batch_idx)
+        outputs1, losses1, loss_first_path, encoder_output = self.step1(batch, all_params, batch_idx, series_len)
         
         if phase == 'train':
             self.optimizers_zero_grad()  # Zero the gradients
@@ -532,8 +757,11 @@ class TATERTrainer(SmirkTrainer):
                 torch.nn.utils.clip_grad_norm_(self.smirk_generator.parameters(), 0.1)
 
             if (batch_idx + 1) % self.accumulate_steps == 0:
-                self.optimizers_step(step_encoder=not self.config.train.freeze_encoder_in_second_path, 
-                                     step_fuse_generator=not self.config.train.freeze_generator_in_second_path)  # Apply accumulated gradients
+                if self.config.train.optimize_generator:
+                    self.optimizers_step(step_encoder=not self.config.train.freeze_encoder_in_second_path, 
+                                        step_fuse_generator=not self.config.train.freeze_generator_in_second_path)  # Apply accumulated gradients
+                else:
+                    self.optimizers_step(step_encoder=True)
                 self.scheduler_step()  # Step the scheduler
                 self.global_step += 1  # Increment global step
 

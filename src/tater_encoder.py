@@ -34,24 +34,34 @@ class TATEREncoder(SmirkEncoder):
         # Transformer initialization (Xavier init with scaling)
         init_xavier = lambda m: initialize_transformer_xavier(m, config.arch.TATER.Expression.init_scale)
 
+        self.apply_linear_after_res = config.arch.TATER.use_interp_linear_layer
+        self.apply_linear_before_res = not self.apply_linear_after_res
+
         self.use_base_exp = config.arch.TATER.Expression.use_base_encoder
         self.use_latent_exp = config.arch.TATER.Expression.use_latent
+        self.add_to_flame_exp = config.arch.TATER.Expression.add_to_flame
         if not self.use_base_exp:
             self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
             self.exp_emb_size = config.arch.TATER.Expression.linear_size
-            self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3)
+            self.use_exp_linear = config.arch.TATER.Expression.use_linear
+            if self.use_exp_linear:
+                exp_offset = 0 # 1 if self.apply_linear_before_res else 0
+                self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3 + exp_offset)
 
             if config.arch.TATER.Expression.init_near_zero:
                 self.exp_transformer.apply(init_xavier)
-                self.exp_transformer.attention_blocks[2].linear2.weight = nn.Parameter(
-                    torch.zeros_like(self.exp_transformer.attention_blocks[-1].linear2.weight))
+                torch.nn.init.zeros_(self.exp_layer.weight)
+                torch.nn.init.zeros_(self.exp_layer.bias)
 
         self.use_base_shape = config.arch.TATER.Shape.use_base_encoder
         self.use_latent_shape = config.arch.TATER.Shape.use_latent
+        self.add_to_flame_shape = config.arch.TATER.Shape.add_to_flame
         if not self.use_base_shape:
             self.shape_transformer = TemporalTransformer(config.arch.TATER.Shape.Transformer)
             self.shape_emb_size = config.arch.TATER.Shape.linear_size
-            self.shape_layer = nn.Linear(self.shape_emb_size, n_shape)
+            self.use_shape_linear = config.arch.TATER.Shape.use_linear
+            if self.use_shape_linear:
+                self.shape_layer = nn.Linear(self.shape_emb_size, n_shape)
 
             if config.arch.TATER.Shape.init_near_zero:
                 self.shape_transformer.apply(init_xavier)
@@ -60,10 +70,13 @@ class TATEREncoder(SmirkEncoder):
 
         self.use_base_pose = config.arch.TATER.Pose.use_base_encoder
         self.use_latent_pose = config.arch.TATER.Pose.use_latent
+        self.add_to_flame_pose = config.arch.TATER.Pose.add_to_flame
         if not self.use_base_pose:
             self.pose_transformer = TemporalTransformer(config.arch.TATER.Pose.Transformer)
             self.pose_emb_size = config.arch.TATER.Pose.linear_size
-            self.pose_layer = nn.Linear(self.pose_emb_size, 6)
+            self.use_pose_linear = config.arch.TATER.Pose.use_linear
+            if self.use_pose_linear:
+                self.pose_layer = nn.Linear(self.pose_emb_size, 6)
 
             if config.arch.TATER.Pose.init_near_zero:
                 self.pose_transformer.apply(init_xavier)
@@ -73,9 +86,6 @@ class TATEREncoder(SmirkEncoder):
         self.use_interp_linear_layer = config.arch.TATER.use_interp_linear_layer
         if self.use_interp_linear_layer:
             self.residual_layer = nn.Linear(self.emb_size * 2, self.emb_size)
-
-        self.apply_linear_after_res = config.arch.TATER.use_interp_linear_layer
-        self.apply_linear_before_res = not self.apply_linear_after_res
 
 
     def update_residual_scale(self, iteration):
@@ -104,12 +114,13 @@ class TATEREncoder(SmirkEncoder):
         start_idx = 0
         updated_encodings = exp_encodings_all.clone()
 
+        final_residuals = []
         for i, length in enumerate(og_series_len):
             original_encodings_slice = exp_encodings_all[start_idx:start_idx + length]
 
             if not self.interp_down_residual:
                 # No downsampling: Simply add the residual directly to the original encodings
-                residual_slice = exp_residual_down[i]
+                residual_slice = exp_residual_down[i][:length]
                 if self.enable_residual_scaling:
                     residual_slice *= self.residual_scale  # Apply scaling only if enabled
                 updated_encodings[start_idx:start_idx + length] += residual_slice
@@ -127,9 +138,12 @@ class TATEREncoder(SmirkEncoder):
                         residual_slice *= self.residual_scale  # Apply scaling only if enabled
                     updated_encodings[start_idx:start_idx + length] += residual_slice
 
+            final_residuals.append(residual_slice)
             start_idx += length
 
-        return updated_encodings
+        final_residuals = torch.cat(final_residuals)
+
+        return updated_encodings, final_residuals
 
     def pad_and_create_mask(self, combined_tensor, og_series_len, downsample=False, sample_rate=1):
         def downsample_tensor(tensor, sample_rate):
@@ -242,6 +256,13 @@ class TATEREncoder(SmirkEncoder):
                 exp_encodings_all = self.expression_encoder(img_cat)
                 exp_encodings_all = torch.cat(list(exp_encodings_all.values()), dim=-1)
                 exp_encodings_all = F.pad(exp_encodings_all, (0, 1), "constant", 0) # Slighlty too short
+            
+            if self.add_to_flame_exp:
+                base_encoding = self.expression_encoder(img_cat)
+                base_encoding = torch.cat(list(base_encoding.values()), dim=-1)
+            else:
+                base_encoding = self.expression_encoder.encoder(img_cat)
+                base_encoding = F.adaptive_avg_pool2d(exp_encodings_all[-1], (1, 1)).squeeze(-1).squeeze(-1)
 
             exp_encodings_down, attention_mask, series_len = self.pad_and_create_mask(
                 exp_encodings_all,
@@ -250,23 +271,30 @@ class TATEREncoder(SmirkEncoder):
                 sample_rate=self.downsample_rate
             )
 
-            exp_residual_down, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len)
+            exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len)
+            outputs['expression_residuals_down'] = exp_residual_out
 
-            if self.apply_linear_before_res:
-                exp_parameters = self.exp_layer(updated_exp_encodings_all).reshape(exp_encodings_all.size(0), -1)
+            if self.apply_linear_before_res and self.use_exp_linear:
+                exp_residual_down = self.exp_layer(exp_residual_out)
+            else:
+                exp_encodings_down = exp_residual_out
 
-            updated_exp_encodings_all = self.add_residual_to_encodings(
-                exp_encodings_all,
+
+            updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
+                base_encoding,
                 exp_residual_down,
                 series_len,
                 og_series_len
             )
 
-            if self.apply_linear_after_res:
-                exp_parameters = self.exp_layer(updated_exp_encodings_all).reshape(exp_encodings_all.size(0), -1)
+            if self.apply_linear_after_res and self.use_exp_linear:
+                exp_parameters = self.exp_layer(updated_exp_encodings_all)
+            else:
+                exp_parameters = updated_exp_encodings_all
+            exp_parameters = exp_parameters.reshape(exp_parameters.size(0), -1)
 
             outputs['expression_params'] = exp_parameters[...,:self.n_exp]
-            outputs['expression_residuals_down'] = exp_residual_down
+            outputs['expression_residuals_final'] = exp_residuals_final
             outputs['res_series_len'] = series_len
             outputs['eyelid_params'] = torch.clamp(exp_parameters[...,self.n_exp:self.n_exp+2], 0, 1)
             outputs['jaw_params'] = torch.cat([F.relu(exp_parameters[...,self.n_exp+2].unsqueeze(-1)) * 2, 
@@ -316,8 +344,8 @@ class TATEREncoder(SmirkEncoder):
 
             pose_residual_down, pose_class = self.pose_transformer(pose_encodings_down, attention_mask, series_len)
 
-            if self.apply_linear_before_res:
-                pose_parameters = self.pose_layer(updated_pose_encodings_all).reshape(exp_encodings_all.size(0), -1)
+            if self.apply_linear_before_res and self.use_pose_linear:
+                pose_residual_down = self.pose_layer(pose_residual_down)
 
             updated_pose_encodings_all = self.add_residual_to_encodings(
                 pose_encodings_all,
@@ -326,8 +354,11 @@ class TATEREncoder(SmirkEncoder):
                 og_series_len
             )
 
-            if self.apply_linear_after_res:
-                pose_parameters = self.pose_layer(updated_pose_encodings_all).reshape(exp_encodings_all.size(0), -1)
+            if self.apply_linear_after_res and self.use_pose_linear:
+                pose_parameters = self.pose_layer(updated_pose_encodings_all)
+            else:
+                pose_parameters = updated_pose_encodings_all
+            pose_parameters = pose_parameters.reshape(pose_parameters.size(0), -1)
             
             outputs['pose_params'] = pose_parameters[...,:3]
             outputs['cam'] = pose_parameters[...,3:]

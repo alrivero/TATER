@@ -6,7 +6,7 @@ from src.tater_trainer import TATERTrainer
 import os
 from datasets.data_utils import load_dataloaders
 import debug
-
+import traceback
 
 def parse_args():
     conf = OmegaConf.load(sys.argv[1])
@@ -57,15 +57,12 @@ if __name__ == '__main__':
                     # Move batch to the appropriate device
                     trainer.set_freeze_status(config, batch_idx, epoch)
                     for key in batch:
-                        if torch.is_tensor(batch[key][0]):
+                        phoneme_keys = ["audio_phonemes", "text_phonemes"]
+                        if torch.is_tensor(batch[key][0]) and key not in phoneme_keys:
                             for i in range(len(batch[key])):
                                 batch[key][i] = batch[key][i].to(config.device)
 
                     if batch_idx % 50 == 0:
-                        print(trainer.tater.exp_transformer.attention_blocks[0].linear1.weight.unique())
-                        print(trainer.tater.exp_layer.weight.unique())
-
-                    if batch_idx % 200 == 0:
                         print(trainer.tater.exp_transformer.attention_blocks[0].linear1.weight.unique())
                         print(trainer.tater.exp_layer.weight.unique())
 
@@ -79,6 +76,7 @@ if __name__ == '__main__':
                 except Exception as e:
                     print(f"Error loading batch_idx {batch_idx}!")
                     print(e)
+                    traceback.print_exc()
 
                 if batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1:
                     trainer.save_model(trainer.state_dict(), os.path.join(config.train.log_path, 'model_{}.pt'.format(batch_idx)))

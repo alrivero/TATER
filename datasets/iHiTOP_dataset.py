@@ -7,10 +7,12 @@ import h5py
 import datasets.data_utils as data_utils
 import albumentations as A
 from datasets.base_video_dataset import BaseVideoDataset
+from transformers import Wav2Vec2Processor
 import numpy as np
 import cv2
 from multiprocessing import Pool, TimeoutError
 import time
+import math
 
 
 class iHiTOPDataset(BaseVideoDataset):
@@ -19,6 +21,47 @@ class iHiTOPDataset(BaseVideoDataset):
         self.name = 'iHiTOP'
         self.num_workers = config.dataset.iHiTOP_aug_workers
         self.iHiTOP_frame_step = config.dataset.iHiTOP_frame_step
+
+        self.phoneme_map = self.create_phoneme_map()
+
+    def create_phoneme_map(self):
+        # Viseme groups based on articulation and mouth shape
+        phoneme_groups = {
+            1: ["m", "b", "p"],          # Bilabials (lips together)
+            2: ["f", "v"],               # Labiodentals (lip and teeth)
+            3: ["th", "dh"],             # Dentals (tongue near teeth)
+            4: ["t", "d", "s", "z", "n", "l", "dx", "r"],  # Alveolars (tongue near alveolar ridge)
+            5: ["sh", "zh"],             # Postalveolars (tongue near hard palate)
+            6: ["j", "ch", "jh", "y"],   # Palatals (tongue near palate)
+            7: ["k", "g", "ng", "w"],    # Velars (tongue near velum, includes "w" for labio-velar)
+            8: ["hh", "h#"],             # Glottals (throat, back of mouth)
+            9: ["aa", "ae", "ah", "aw", "ay", "eh", "er", "ey", "ih", "iy", "ow", "oy", "uh", "uw"],  # Vowels
+            10: ["|"],                   # Space (Pause between words)
+            11: ["spn"],                 # Silence (spn)
+            12: ["[UNK]"],               # Unknown phoneme
+            13: ["[PAD]"],               # Padding token
+            14: ["<s>"],                 # Start of sequence
+            15: ["</s>"],                # End of sequence
+        }
+
+        id_to_group = {}
+        def get_phoneme_group_number(phoneme):
+            # Determine the viseme group for each phoneme
+            for group_number, phonemes in phoneme_groups.items():
+                if phoneme in phonemes:
+                    return group_number
+            return -1
+
+        processor = Wav2Vec2Processor.from_pretrained("vitouphy/wav2vec2-xls-r-300m-phoneme")
+        vocab_size = processor.tokenizer.vocab_size
+
+        # Map each phoneme ID to its corresponding viseme group
+        for idx in range(vocab_size):
+            phoneme = processor.tokenizer.convert_ids_to_tokens([idx])[0]
+            phoneme_group_number = get_phoneme_group_number(phoneme)
+            id_to_group[idx] = phoneme_group_number
+
+        return id_to_group
 
     def __len__(self):
         return len(self.split_idxs)
@@ -41,6 +84,202 @@ class iHiTOPDataset(BaseVideoDataset):
         else:
             transformed = resize(image=cropped_image, mask=1 - hull_mask, keypoints=cropped_landmarks_fan, mediapipe_keypoints=cropped_landmarks_mediapipe)
         return index, transformed
+    
+    def drop_audio_segments(self, video_dict):
+        """
+        Drops audio segments that correspond to dropped frames in the video.
+        """
+        dropped_frames = video_dict.get("dropped_frames", torch.tensor([], dtype=torch.int32)).to(video_dict["img"].device)
+        audio_sample_rate = video_dict["audio_sample_rate"].item()
+        video_frame_rate = video_dict["fps"].item()
+
+        # Calculate total video frames (including dropped)
+        total_video_frames = video_dict["img"].shape[0] + dropped_frames.shape[0]
+
+        # Calculate timestamps for each frame
+        frame_timestamps = torch.linspace(0, total_video_frames / video_frame_rate, total_video_frames, device=dropped_frames.device)
+
+        # Remove dropped frame timestamps
+        valid_timestamps = torch.cat([frame_timestamps[:dropped_frames[0]], frame_timestamps[dropped_frames[-1] + 1:]]) if dropped_frames.numel() > 0 else frame_timestamps
+
+        # Calculate duration of each valid video frame in seconds
+        frame_duration = 1.0 / video_frame_rate
+
+        # Calculate corresponding audio indices for each valid frame timestamp
+        audio_start_indices = (valid_timestamps * audio_sample_rate).long()
+        audio_end_indices = ((valid_timestamps + frame_duration) * audio_sample_rate).long()
+
+        # Create a new audio tensor by combining the valid audio segments
+        audio_segments = [video_dict["audio"][start:end] for start, end in zip(audio_start_indices, audio_end_indices)]
+        video_dict["audio"] = torch.cat(audio_segments)
+        return video_dict
+
+    def create_phoneme_group_timestamps(self, video_dict):
+        """
+        Creates group timestamps given audio, video frames, dropped frames, and phoneme group mappings.
+        Output: (GROUP ID, phoneme, start_idx, end_idx) where start_idx and end_idx are indices in img_tensor.
+        """
+        audio_tensor = video_dict["audio"]
+        img_tensor = video_dict["img"]
+        dropped_frames = video_dict.get("dropped_frames", torch.tensor([], dtype=torch.int32)).to(img_tensor.device)
+        sequence_tensor = video_dict["audio_phonemes"][0]
+        text_tensor = video_dict["text_phonemes"]
+        audio_sample_rate = video_dict["audio_sample_rate"]  # Accessing attributes directly
+        video_frame_rate = video_dict["fps"]  # Accessing attributes directly
+
+        # Step 1: Measure the length of the audio in seconds
+        audio_length_seconds = audio_tensor.size(0) / audio_sample_rate
+
+        # Step 2: Calculate the number of video frames based on img_tensor shape and dropped frames
+        total_frames = img_tensor.shape[0] + dropped_frames.shape[0]
+
+        # Step 3: Calculate the timestamp for each video frame (including dropped frames)
+        frame_timestamps = torch.linspace(0, total_frames / video_frame_rate, total_frames, device=img_tensor.device)
+
+        # Step 5: Calculate phoneme durations in seconds
+        phoneme_duration = audio_length_seconds / len(sequence_tensor)
+
+        # Step 6: Create the array of tuples (group, phoneme, start_time, end_time) for valid groups (1-9)
+        phoneme_id_to_group = self.phoneme_map
+        group_timestamps = []
+
+        current_group = -1
+        group_start_time = None
+        group_end_time = None
+        current_phoneme = None  # Store the current phoneme
+
+        for i, phoneme_id in enumerate(sequence_tensor):
+            group = phoneme_id_to_group.get(int(phoneme_id.item()), -1)
+
+            if group == 13:  # Handle "[PAD]" (group 13) by extending the current group's end time
+                if current_group != -1 and group_start_time is not None:
+                    group_end_time += phoneme_duration
+                continue  # Do not change the current group
+
+            if group == -1 or group > 9:  # End the current group for irrelevant groups
+                if current_group != -1 and group_start_time is not None:
+                    # Close the ongoing group and append to group_timestamps
+                    group_timestamps.append((current_group, current_phoneme, group_start_time, group_end_time))
+                    current_group = -1  # Reset the current group
+                    group_start_time = None
+                    group_end_time = None
+                    current_phoneme = None
+                continue  # Move to the next phoneme
+
+            # If we reach here, it's a valid group (1-9)
+            if current_group == -1:
+                current_group = group
+                current_phoneme = phoneme_id.item()  # Track the original phoneme
+                group_start_time = i * phoneme_duration
+                group_end_time = group_start_time + phoneme_duration
+            elif current_group != group:
+                # Close the previous group and start a new group
+                group_timestamps.append((current_group, current_phoneme, group_start_time, group_end_time))
+
+                current_group = group
+                current_phoneme = phoneme_id.item()  # Update to the new phoneme
+                group_start_time = group_end_time
+                group_end_time = group_start_time + phoneme_duration
+            else:
+                # Continue extending the current group's end time
+                group_end_time += phoneme_duration
+
+        # Ensure any open segment is closed at the end of the sequence
+        if current_group != -1 and group_start_time is not None:
+            group_timestamps.append((current_group, current_phoneme, group_start_time, audio_length_seconds))
+
+        # Step 7: Identify contiguous sequences of dropped frames
+        if dropped_frames.numel() > 0:
+            dropped_sequences = []
+            start_idx = dropped_frames[0].item()
+            for i in range(1, len(dropped_frames)):
+                if dropped_frames[i] != dropped_frames[i - 1] + 1:
+                    dropped_sequences.append((start_idx, dropped_frames[i - 1].item()))
+                    start_idx = dropped_frames[i].item()
+            dropped_sequences.append((start_idx, dropped_frames[-1].item()))
+
+            # Step 7.1: Adjust group timestamps based on dropped frame sequences and remove fully dropped groups
+            adjusted_group_timestamps = []
+            for group, phoneme, start_time, end_time in group_timestamps:
+                fully_dropped = False
+                for drop_start, drop_end in dropped_sequences:
+                    drop_start_time = frame_timestamps[drop_start].item()
+                    drop_end_time = frame_timestamps[drop_end].item()
+
+                    # Check if the dropped sequence completely overlaps the group (fully dropped group)
+                    if drop_start_time <= start_time and drop_end_time >= end_time:
+                        fully_dropped = True
+                        break
+
+                    # Adjust if the dropped sequence overlaps with the start of the group
+                    if drop_start_time <= start_time <= drop_end_time:
+                        start_time = min(drop_end_time + (1.0 / video_frame_rate), audio_length_seconds)
+
+                    # Adjust if the dropped sequence overlaps with the end of the group
+                    if drop_start_time <= end_time <= drop_end_time:
+                        end_time = max(drop_start_time - (1.0 / video_frame_rate), 0)
+
+                    # If the dropped sequence is in-between, reduce the group length accordingly
+                    if start_time < drop_start_time < end_time:
+                        duration_reduction = (drop_end_time - drop_start_time) + (1.0 / video_frame_rate)
+                        end_time -= duration_reduction
+
+                if not fully_dropped:
+                    # Append the adjusted group timestamp only if it wasn't fully dropped
+                    adjusted_group_timestamps.append((group, phoneme, start_time, end_time))
+                    
+            group_timestamps = adjusted_group_timestamps
+
+        # Step 9: Convert adjusted timestamps into img_tensor indices
+        video_group_indices = []
+        for group, phoneme, start_time, end_time in group_timestamps:
+            start_idx = math.floor(start_time * video_frame_rate)  # Convert start time to index
+            end_idx = math.ceil(end_time * video_frame_rate)      # Convert end time to index
+
+            # Ensure indices are within img_tensor bounds
+            start_idx = max(0, min(start_idx, img_tensor.shape[0] - 1))
+            end_idx = max(0, min(end_idx, img_tensor.shape[0] - 1))
+
+            if start_idx == end_idx:
+                continue
+            video_group_indices.append((group, phoneme, start_idx, end_idx))
+
+        # Step 10: Finally, filter out false-positives using the text-based phonemes
+        text_phoneme_groups = [phoneme_id_to_group.get(int(x.item()), -1) for x in text_tensor]
+        final_group_indices = []
+        for group in text_phoneme_groups:
+            for i, group_idx in enumerate(video_group_indices):
+                if group_idx[0] == group:
+                    final_group_indices.append(group_idx)
+                    video_group_indices = video_group_indices[min(i + 1, len(video_group_indices)):]
+                    break
+        
+        return final_group_indices
+
+
+    def phoneme_group_agreement(self, video_dict, phoneme_map):
+        """
+        Measures the agreement in present phoneme groups between audio and text phonemes.
+        :param video_dict: Dictionary containing "audio_phonemes" and "text_phonemes"
+        :param phoneme_map: Dictionary mapping phoneme IDs to their groups (0-9)
+        :return: Percentage of agreement between audio and text phoneme groups
+        """
+        audio_phonemes = video_dict["audio_phonemes"][0]
+        text_phonemes = video_dict["text_phonemes"]
+
+        # Map phonemes to their groups for audio and text
+        audio_groups = {phoneme_map[phoneme.item()] for phoneme in audio_phonemes if phoneme_map[phoneme.item()] in range(0, 10)}
+        text_groups = {phoneme_map[phoneme.item()] for phoneme in text_phonemes if phoneme_map[phoneme.item()] in range(0, 10)}
+
+        # Measure overlap (intersection) between audio and text phoneme groups
+        common_groups = audio_groups.intersection(text_groups)
+
+        # Quantify the overlap
+        if len(text_groups) == 0:
+            return 0.0  # Avoid division by zero if there are no groups
+        overlap_percentage = len(common_groups) / len(text_groups)
+
+        return overlap_percentage
 
     def __getitem_aux__(self, index):
         v, s = self.split_idxs[index]
@@ -56,6 +295,9 @@ class iHiTOPDataset(BaseVideoDataset):
                 sampled_value = sampled_value[sampled_idxs]
 
                 video_dict[key] = sampled_value
+
+        video_dict["fps"] = video_group.attrs["fps"]
+        video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
 
         # Resize data based on random or fixed scale
         if isinstance(self.scale, list):
@@ -123,6 +365,20 @@ class iHiTOPDataset(BaseVideoDataset):
         for key, item in video_dict.items():
             if isinstance(item, np.ndarray) and item.dtype != "S1":
                 video_dict[key] = torch.tensor(item)
+        
+        # If missing data, mark it as audio/no audio
+        if "audio_phonemes" not in video_dict.keys():
+            video_dict["audio_phonemes"] = torch.empty((1,))
+            video_dict["text_phonemes"] = torch.empty((1,))
+            video_dict["silent"] = torch.tensor([True])
+            video_dict["phoneme_timestamps"] = []
+        elif len(["audio_phonemes"]) == 0:
+            video_dict["silent"] = torch.tensor([True])
+            video_dict["phoneme_timestamps"] = []
+        else:
+            video_dict["silent"] = torch.tensor([False])
+            video_dict["phoneme_timestamps"] = self.create_phoneme_group_timestamps(video_dict)
+            video_dict = self.drop_audio_segments(video_dict)
 
         return video_dict
 
