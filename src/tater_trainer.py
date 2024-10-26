@@ -269,12 +269,6 @@ class TATERTrainer(SmirkTrainer):
         losses['jaw_regularization'] = torch.mean((encoder_output['jaw_params'] - base_output['jaw_params'])**2)
         losses['eyelid_regularization'] = torch.mean((encoder_output['eyelid_params'] - base_output['eyelid_params'])**2)
 
-        if batch_idx % 10 == 0:
-            print(f"Ours: {encoder_output['jaw_params'].mean(dim=0)}")
-            print(f"Base: {base_output['jaw_params'].mean(dim=0)}")
-            print(f"Ours: {encoder_output['eyelid_params'].mean(dim=0)}")
-            print(f"Base: {base_output['eyelid_params'].mean(dim=0)}")
-
         if not self.config.arch.TATER.Expression.use_base_encoder:
             exp_res = [x[:s] for x, s in zip(encoder_output['expression_residuals_down'], encoder_output['res_series_len'])]
             exp_res = torch.cat(exp_res)
@@ -677,11 +671,6 @@ class TATERTrainer(SmirkTrainer):
 
         for key, value in losses.items():
             losses[key] = value.item() if isinstance(value, torch.Tensor) else value
-
-        if batch_idx % 10 == 0:
-            print(encoder_output["jaw_params"].mean(dim=0))
-            print(recon_feats["jaw_params"].mean(dim=0))
-            print(flame_feats["jaw_params"].mean(dim=0))
 
 
         # ---------------- visualization struct ---------------- #
