@@ -93,7 +93,7 @@ arch:
 
       Transformer:
         positional_embedding: "Sinusoidal"
-        num_layers: 3
+        num_layers: 4
 
         final_dropout:
           enable: False
@@ -102,7 +102,7 @@ arch:
         attention:
           hidden_size: 960
           hidden_size_2: 1920
-          num_attention_heads: 2
+          num_attention_heads: 4
           attention_probs_dropout_prob: 0.1
 
           layer_norm_eps: 1e-12

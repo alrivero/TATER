@@ -14,7 +14,7 @@ train:
   batch_size: 2
   accumulate_steps: 3
   num_workers: 0 # Using multiprocessing in Dataset
-  log_path: logs/train_exp_latent_w_phoneme_v4
+  log_path: logs/train_exp_latent_v2
   log_losses_every: 10
   visualize_every: 50
   mask_ratio: 0.01  # % pixel to be retained inside the face mask
@@ -52,7 +52,7 @@ train:
     mica_loss: 0.0
     landmark_mouth_dist_loss: 10.0
     mouth_vgg_loss: 0.0
-    phoneme_loss: 1.0
+    phoneme_loss: 0.0
     velocity_loss: 0.0
 
   optimize_base_pose: False
@@ -160,7 +160,7 @@ arch:
     text_emb_size: 768
 
   Phoneme_Classifier:
-    enable: True
+    enable: False
     type: "Linear"
     use_latent: True
     Transformer:
