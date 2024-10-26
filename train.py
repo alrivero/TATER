@@ -46,7 +46,7 @@ if __name__ == '__main__':
         # restart everything at each epoch!
         trainer.configure_optimizers(len(train_loader))
 
-        for phase in ['train', 'val']:
+        for phase in ['train']:
             loader = train_loader if phase == 'train' else val_loader
             
             for batch_idx, batch in tqdm(enumerate(loader), total=len(loader)):
@@ -79,4 +79,4 @@ if __name__ == '__main__':
                     traceback.print_exc()
 
                 if batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1:
-                    trainer.save_model(trainer.state_dict(), os.path.join(config.train.log_path, 'model_{}.pt'.format(batch_idx)))
+                    trainer.save_model(trainer.state_dict(), os.path.join(config.train.log_path, 'model_{}.pt'.format(epoch * len(loader) + batch_idx)))
