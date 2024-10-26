@@ -1,3 +1,6 @@
+*.png
+*.mp4
+*.mp3
 old_logs/
 old_logs_2/
 other/
