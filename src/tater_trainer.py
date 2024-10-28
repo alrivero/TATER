@@ -588,9 +588,10 @@ class TATERTrainer(SmirkTrainer):
         
         # start from the same encoder output and add noise to expression params
         # hard clone flame_feats
+        dont_clone = ['expression_residuals_down', 'res_series_len', 'expression_residuals_final', 'shape_residuals_down', 'pose_residuals_down', 'pose_residuals_final']
         flame_feats = {}
         for k, v in encoder_output.items():
-            if k == 'expression_residuals_down' or k == 'res_series_len':
+            if k in dont_clone:
                 continue
 
             tmp = v.clone().detach()
