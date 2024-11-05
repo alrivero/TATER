@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from scipy.spatial.transform import Rotation as R
 from .models.transformer.temporaltransformer import TemporalTransformer
 from .smirk_encoder import SmirkEncoder
 
@@ -76,7 +77,7 @@ class TATEREncoder(SmirkEncoder):
             self.pose_emb_size = config.arch.TATER.Pose.linear_size
             self.use_pose_linear = config.arch.TATER.Pose.use_linear
             if self.use_pose_linear:
-                self.pose_layer = nn.Linear(self.pose_emb_size, 6)
+                self.pose_layer = nn.Linear(self.pose_emb_size, 18)
 
             if config.arch.TATER.Pose.init_near_zero:
                 self.pose_transformer.apply(init_xavier)
@@ -238,6 +239,21 @@ class TATEREncoder(SmirkEncoder):
             interpolated[last_sampled_idx + 1:] = tail_interpolated_values
 
         return interpolated
+    
+    def rotation_matrix_to_euler(self, matrix):
+        """Convert rotation matrix to Euler angles."""
+        sy = torch.sqrt(matrix[:, 0, 0] ** 2 + matrix[:, 1, 0] ** 2)
+        singular = sy < 1e-6
+        x = torch.atan2(matrix[:, 2, 1], matrix[:, 2, 2])
+        y = torch.atan2(-matrix[:, 2, 0], sy)
+        z = torch.atan2(matrix[:, 1, 0], matrix[:, 0, 0])
+
+        x_sing = torch.atan2(-matrix[:, 1, 2], matrix[:, 1, 1])
+        z_sing = torch.zeros_like(x)
+        
+        x = torch.where(singular, x_sing, x)
+        z = torch.where(singular, z_sing, z)
+        return torch.stack((x, y, z), dim=1)
 
     def forward(self, img_batch, og_series_len):
         outputs = {}
@@ -337,6 +353,8 @@ class TATEREncoder(SmirkEncoder):
             outputs['shape_params'] = shape_parameters
             outputs['shape_residuals_down'] = shape_residual_down
             outputs['res_series_len'] = series_len
+
+            shape_parameters.sum()
         
         if self.use_base_pose:
             outputs.update(self.pose_encoder(img_cat))
@@ -370,9 +388,25 @@ class TATEREncoder(SmirkEncoder):
             else:
                 pose_residual_down = pose_residual_out
 
+            # Convert each 9D residual block to Euler angles, handling (B, N, D) shape
+            B, N, _ = pose_residual_down.shape
+            converted_residuals = torch.zeros((B, N, 6), device=pose_residual_down.device)  # To hold converted residuals
+
+            for b in range(B):
+                for n in range(N):
+                    euler_angles_set = []
+                    for j in range(2):  # Two sets of 9D rotations
+                        start_idx = j * 9
+                        pose_vec = pose_residual_down[b, n, start_idx:start_idx + 9].view(3, 3)  # Reshape each 9D block to 3x3
+                        u, _, vh = torch.linalg.svd(pose_vec, full_matrices=False)
+                        rotation_matrix = torch.matmul(u, vh)
+                        euler_angles = self.rotation_matrix_to_euler(rotation_matrix.unsqueeze(0)).squeeze(0)  # Convert to Euler angles
+                        euler_angles_set.append(euler_angles)
+                    converted_residuals[b, n, :] = torch.cat(euler_angles_set)  # Store both sets of Euler angles
+
             updated_pose_encodings_all, pose_residuals_final = self.add_residual_to_encodings(
                 base_pose_encoding,
-                pose_residual_down,
+                converted_residuals,
                 series_len,
                 og_series_len
             )
