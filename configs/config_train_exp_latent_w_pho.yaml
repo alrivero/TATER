@@ -11,10 +11,10 @@ train:
 
   lr: 1e-3
   num_epochs: 10
-  batch_size: 2
-  accumulate_steps: 3
+  batch_size: 1
+  accumulate_steps: 5
   num_workers: 0 # Using multiprocessing in Dataset
-  log_path: logs/train_exp_latent_w_phoneme_v4
+  log_path: logs/train_exp_latent_w_phoneme_v5
   log_losses_every: 10
   visualize_every: 50
   mask_ratio: 0.01  # % pixel to be retained inside the face mask
@@ -35,23 +35,23 @@ train:
   residual_schedule: "cosine"
 
   loss_weights:
-    landmark_loss: 5000.0   # landmark loss weight
-    perceptual_vgg_loss: 5.0  # RECONSTRUCTION - perceptual vgg loss weight
+    landmark_loss: 500.0   # landmark loss weight
+    perceptual_vgg_loss: 10.0  # RECONSTRUCTION - perceptual vgg loss weight
     reconstruction_loss: 100.0  # RECONSTRUCTION - l1 loss weight
     emotion_loss: 0.0  # extra emotion loss weight 
-    jaw_regularization: 3.0
+    jaw_regularization: 1.0
     eyelid_regularization: 1.0
-    expression_regularization: 3.0
+    expression_regularization: 1.0
     shape_regularization: 0.0
     pose_regularization: 0.0
     cam_regularization: 0.0
-    exp_res_regularization: 0.0
+    exp_res_regularization: 1.0
     shape_res_regularization: 0.0
     pose_res_regularization: 0.0
     cycle_loss: 1.0  # CYCLE loss
     mica_loss: 0.0
     landmark_mouth_dist_loss: 10.0
-    mouth_vgg_loss: 0.0
+    mouth_vgg_loss: 1.0
     phoneme_loss: 1.0
     velocity_loss: 0.0
 
@@ -116,7 +116,7 @@ arch:
       init_near_zero: True
       init_scale: 1e-9
 
-      Transformer:
+      Transformer: 
         positional_embedding: "Sinusoidal"
         num_layers: 3
 

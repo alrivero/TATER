@@ -10,19 +10,16 @@ seed: 13809409134
 train:
 
   lr: 1e-3
-  max_lr: 1e-3
-  min_lr: 1e-5
-  iterations_until_max_lr: 10000
   num_epochs: 10
-  batch_size: 2
-  accumulate_steps: 3
+  batch_size: 1
+  accumulate_steps: 5
   num_workers: 0 # Using multiprocessing in Dataset
-  log_path: logs/train_exp_latent
+  log_path: logs/train_pose_v2
   log_losses_every: 10
   visualize_every: 50
   mask_ratio: 0.01  # % pixel to be retained inside the face mask
   mask_dilation_radius: 10 # dilation of the initial face mask
-  save_every: 15000 # save model every n epochs
+  save_every: 10000 # save model every n epochs
   use_wandb: False
   Ke: 1 # number of repeated frames for 2nd cycle path
   # samples_per_epoch: 354178 # Max Cull 430095 # Culled 472033 DEPRECATED
@@ -38,29 +35,32 @@ train:
   residual_schedule: "cosine"
 
   loss_weights:
-    landmark_loss: 500.0   # landmark loss weight
+    landmark_loss: 1000.0   # landmark loss weight
     perceptual_vgg_loss: 10.0  # RECONSTRUCTION - perceptual vgg loss weight
-    reconstruction_loss: 100.0  # RECONSTRUuCTION - l1 loss weight
+    reconstruction_loss: 100.0  # RECONSTRUCTION - l1 loss weight
     emotion_loss: 0.0  # extra emotion loss weight 
-    jaw_regularization: 1.0
-    eyelid_regularization: 1.0
-    expression_regularization: 1.0
-    shape_regularization: 1.0
+    jaw_regularization: 0.0
+    eyelid_regularization: 0.0
+    expression_regularization: 0.0
+    shape_regularization: 0.0
     pose_regularization: 1.0
-    cam_regularization: 10.0
-    exp_res_regularization: 1.0
-    shape_res_regularization: 1.0
-    pose_res_regularization: 1.0
+    cam_regularization: 0.0
+    exp_res_regularization: 0.0
+    shape_res_regularization: 0.0
+    pose_res_regularization: 0.0
     cycle_loss: 0.0  # CYCLE loss
     mica_loss: 0.0
-    phoneme_loss: 1.0
+    landmark_mouth_dist_loss: 0.0
+    mouth_vgg_loss: 0.0
+    phoneme_loss: 0.0
+    velocity_loss: 0.0
 
   optimize_base_pose: False
   optimize_base_shape: False
   optimize_base_expression: False  # Do not optimize original network
   optimize_tater: True
   optimize_generator: False
-  optimize_phoneme_classifier: True
+  optimize_phoneme_classifier: False
 
   # automatically tunable hyperparameters - just declared here
   freeze_encoder_in_second_path: False
@@ -83,7 +83,7 @@ arch:
     apply_linear_after_res: False
 
     Expression:
-      use_base_encoder: False
+      use_base_encoder: True
       use_linear: True
       use_latent: True
       add_to_flame: True
@@ -133,9 +133,9 @@ arch:
           layer_norm_eps: 1e-12
 
     Pose:
-      use_base_encoder: True
-      use_linear: False
-      use_latent: False
+      use_base_encoder: False
+      use_linear: True
+      use_latent: True
       add_to_flame: True
       linear_size: 576
       init_near_zero: True
@@ -160,7 +160,7 @@ arch:
     text_emb_size: 768
 
   Phoneme_Classifier:
-    enable: True
+    enable: False
     type: "Linear"
     use_latent: True
     Transformer:
@@ -192,14 +192,14 @@ dataset:
   removed_frames_threshold: 0.15
   max_seg_len: 120
   min_seg_len: 9
-  data_idxs: /local/PTSD_STOP/TATER/data_idxs/remove_85_max_120_min_9_new.npy
-  final_idxs: /local/PTSD_STOP/TATER/final_idxs/train_exp_4.npy
-  bad_files: /local/PTSD_STOP/TATER/final_idxs/bad_train_v3.npy
+  data_idxs: /local/PTSD_STOP/TATER/data_idxs/remove_85_max_120_min_9_v5.npy
+  final_idxs: /local/PTSD_STOP/TATER/final_idxs/train_exp_6.npy
+  bad_files: /local/PTSD_STOP/TATER/final_idxs/bad_train_v5.npy
 
   # percentage of data to use for train val test
-  iHiTOP_train_percentage: 0.8
-  iHiTOP_val_percentage: 0.1
-  iHiTOP_test_percentage: 0.1
+  iHiTOP_train_percentage: 1.0
+  iHiTOP_val_percentage: 0.0
+  iHiTOP_test_percentage: 0.0
 
   # percentage of data to use for each dataset
   LRS3_percentage: 0.0
