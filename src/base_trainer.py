@@ -23,6 +23,9 @@ class BaseTrainer(nn.Module):
             loss_str = ''
             for k, v in losses.items():
                 loss_str += f'{k}: {v:.6f} '
+            loss_str += f'Encoder LR: {self.encoder_scheduler.get_last_lr()[0]:.6f} '
+            if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
+                loss_str += f'Generator LR: {self.smirk_generator_scheduler.get_last_lr()[0]:.6f} '
             print(loss_str)
 
     def configure_optimizers(self, n_steps):
