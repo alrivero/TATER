@@ -360,6 +360,7 @@ class iHiTOPDataset(BaseVideoDataset):
         video_dict["landmarks_fan"][:, :, :2] = video_dict["landmarks_fan"][:, :, :2] / self.image_size * 2 - 1
         video_dict["landmarks_mp"][:, :, :2] = video_dict["landmarks_mp"][:, :, :2] / self.image_size * 2 - 1
         video_dict["mask"] = video_dict["mask"].astype(np.float32)
+        video_dict["img_mica"] = video_dict["img_mica"].astype(np.float32)
 
         # Turning numpy arrays into tensors
         for key, item in video_dict.items():
