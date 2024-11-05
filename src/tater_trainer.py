@@ -18,6 +18,7 @@ from torchvision.utils import make_grid
 from .smirk_trainer import SmirkTrainer
 from .tater_encoder import TATEREncoder
 from .phoneme_classifier import PhonemeClassifier
+from .scheduler.risefallscheduler import CustomWarmupCosineScheduler
 
 class TATERTrainer(SmirkTrainer):
     def __init__(self, config):
@@ -47,51 +48,150 @@ class TATERTrainer(SmirkTrainer):
         # --------- setup flame masks for sampling --------- #
         self.face_probabilities = masking_utils.load_probabilities_per_FLAME_triangle()
 
-    def configure_optimizers(self, n_steps):
-        self.n_steps = n_steps
-        encoder_scale = .25
+    def configure_optimizers(self, num_steps, use_default_annealing=False):
+        # Adjust total steps for gradient accumulation
+        effective_total_steps = num_steps // self.config.train.accumulate_steps
+        effective_total_steps = effective_total_steps * 2 if self.config.train.loss_weights.cycle_loss > 0.0 else effective_total_steps
 
-        if hasattr(self, 'encoder_optimizer'):
-            for g in self.encoder_optimizer.param_groups:
-                g['lr'] = encoder_scale * self.config.train.lr
+        # Define max_lr, min_lr, and warmup steps directly from config
+        max_lr = self.config.train.max_lr  # Use max_lr as defined in config
+        min_lr = self.config.train.min_lr  # Scaled min_lr as required
+        warmup_steps = self.config.train.iterations_until_max_lr  # e.g., 10000
+
+        # Encoder Optimizer setup
+        params = []
+        if self.config.train.optimize_base_expression:
+            params += list(self.tater.expression_encoder.parameters()) 
+        if self.config.train.optimize_base_shape:
+            params += list(self.tater.shape_encoder.parameters())
+        if self.config.train.optimize_base_pose:
+            params += list(self.tater.pose_encoder.parameters())
+        if self.config.train.optimize_tater:
+            if not self.config.arch.TATER.Expression.use_base_encoder:
+                params += list(self.tater.exp_transformer.parameters())
+                if self.config.arch.TATER.Expression.use_linear:
+                    params += list(self.tater.exp_layer.parameters())
+            if not self.config.arch.TATER.Shape.use_base_encoder:
+                params += list(self.tater.shape_transformer.parameters())
+                if self.config.arch.TATER.Shape.use_linear:
+                    params += list(self.tater.shape_layer.parameters())
+            if not self.config.arch.TATER.Pose.use_base_encoder:
+                params += list(self.tater.pose_transformer.parameters())
+                if self.config.arch.TATER.Pose.use_linear:
+                    params += list(self.tater.pose_layer.parameters())
+        if self.using_phoneme_classifier and self.config.train.optimize_phoneme_classifier:
+            params += list(self.phoneme_classifier.parameters()) 
+
+        # Initialize the encoder optimizer
+        self.encoder_optimizer = torch.optim.Adam(params, lr=max_lr)
+
+        # Set up CustomCosineScheduler for encoder if OneCycleLR is not preferred
+        if self.config.train.use_one_cycle_lr and not use_default_annealing:
+            self.encoder_scheduler = CustomWarmupCosineScheduler(
+                self.encoder_optimizer,
+                min_lr=min_lr,
+                max_lr=max_lr,
+                warmup_steps=warmup_steps,
+                total_steps=effective_total_steps
+            )
         else:
-            params = []
-            if self.config.train.optimize_base_expression:
-                params += list(self.tater.expression_encoder.parameters()) 
-            if self.config.train.optimize_base_shape:
-                params += list(self.tater.shape_encoder.parameters())
-            if self.config.train.optimize_base_pose:
-                params += list(self.tater.pose_encoder.parameters())
-            if self.config.train.optimize_tater:
-                if not self.config.arch.TATER.Expression.use_base_encoder:
-                    params += list(self.tater.exp_transformer.parameters())
-                    if self.config.arch.TATER.Expression.use_linear:
-                        params += list(self.tater.exp_layer.parameters())
-                if not self.config.arch.TATER.Shape.use_base_encoder:
-                    params += list(self.tater.shape_transformer.parameters())
-                    if self.config.arch.TATER.Shape.use_linear:
-                        params += list(self.tater.shape_layer.parameters())
-                if not self.config.arch.TATER.Pose.use_base_encoder:
-                    params += list(self.tater.pose_transformer.parameters())
-                    if self.config.arch.TATER.Pose.use_linear:
-                        params += list(self.tater.pose_layer.parameters())
-            if self.using_phoneme_classifier and self.config.train.optimize_phoneme_classifier:
-                params += list(self.phoneme_classifier.parameters()) 
+            self.encoder_generator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.encoder_optimizer, T_max=effective_total_steps, eta_min=gen_min_lr
+            )
 
-            self.encoder_optimizer = torch.optim.Adam(params, lr= encoder_scale * self.config.train.lr)
-                
-        self.encoder_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.encoder_optimizer, T_max=n_steps,
-                                                                                  eta_min=0.01 * encoder_scale * self.config.train.lr)
+        # Generator Optimizer and Scheduler setup remains the same
+        gen_max_lr = self.config.train.max_lr  # Use unscaled LR values for generator
+        gen_min_lr = self.config.train.min_lr  # Scaled min_lr for generator as required
 
-        if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
-            if hasattr(self, 'fuse_generator_optimizer'):
-                for g in self.smirk_generator_optimizer.param_groups:
-                    g['lr'] = self.config.train.lr
-            else:
-                self.smirk_generator_optimizer = torch.optim.Adam(self.smirk_generator.parameters(), lr= self.config.train.lr, betas=(0.5, 0.999))
+        if hasattr(self, 'fuse_generator_optimizer'):
+            for g in self.smirk_generator_optimizer.param_groups:
+                g['lr'] = gen_max_lr
+        else:
+            self.smirk_generator_optimizer = torch.optim.Adam(
+                self.smirk_generator.parameters(), 
+                lr=gen_max_lr, 
+                betas=(0.5, 0.999)
+            )
 
-            self.smirk_generator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.smirk_generator_optimizer, T_max=n_steps,
-                                                                                    eta_min=0.01 * self.config.train.lr)
+        if self.config.train.use_one_cycle_lr and not use_default_annealing:
+            self.smirk_generator_scheduler = CustomWarmupCosineScheduler(
+                self.smirk_generator_optimizer,
+                min_lr=gen_min_lr,
+                max_lr=gen_max_lr,
+                warmup_steps=warmup_steps,
+                total_steps=effective_total_steps
+            )
+        else:
+            self.smirk_generator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.smirk_generator_optimizer, T_max=effective_total_steps, eta_min=gen_min_lr
+            )
+
+
+    # def configure_optimizers(self, train_loader):
+    #     n_steps = train_loader  # Number of steps per epoch
+    #     encoder_scale = .25
+    #     max_lr = encoder_scale * self.config.train.lr
+
+    #     if hasattr(self, 'encoder_optimizer'):
+    #         for g in self.encoder_optimizer.param_groups:
+    #             g['lr'] = max_lr
+    #     else:
+    #         params = []
+    #         if self.config.train.optimize_base_expression:
+    #             params += list(self.tater.expression_encoder.parameters()) 
+    #         if self.config.train.optimize_base_shape:
+    #             params += list(self.tater.shape_encoder.parameters())
+    #         if self.config.train.optimize_base_pose:
+    #             params += list(self.tater.pose_encoder.parameters())
+    #         if self.config.train.optimize_tater:
+    #             if not self.config.arch.TATER.Expression.use_base_encoder:
+    #                 params += list(self.tater.exp_transformer.parameters())
+    #                 if self.config.arch.TATER.Expression.use_linear:
+    #                     params += list(self.tater.exp_layer.parameters())
+    #             if not self.config.arch.TATER.Shape.use_base_encoder:
+    #                 params += list(self.tater.shape_transformer.parameters())
+    #                 if self.config.arch.TATER.Shape.use_linear:
+    #                     params += list(self.tater.shape_layer.parameters())
+    #             if not self.config.arch.TATER.Pose.use_base_encoder:
+    #                 params += list(self.tater.pose_transformer.parameters())
+    #                 if self.config.arch.TATER.Pose.use_linear:
+    #                     params += list(self.tater.pose_layer.parameters())
+    #         if self.using_phoneme_classifier and self.config.train.optimize_phoneme_classifier:
+    #             params += list(self.phoneme_classifier.parameters()) 
+
+    #         self.encoder_optimizer = torch.optim.Adam(params, lr=max_lr)
+        
+    #     # Choose between OneCycleLR and CosineAnnealingLR
+    #     if self.config.train.use_one_cycle_lr:
+    #         # OneCycleLR with warmup and cosine annealing
+    #         self.encoder_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #             self.encoder_optimizer, max_lr=max_lr, total_steps=n_steps, pct_start=15000/n_steps,
+    #             anneal_strategy='cos', final_div_factor=10
+    #         )
+    #     else:
+    #         # CosineAnnealingLR scheduler as default
+    #         self.encoder_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #             self.encoder_optimizer, T_max=n_steps, eta_min=0.01 * max_lr
+    #         )
+
+    #     if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
+    #         if hasattr(self, 'fuse_generator_optimizer'):
+    #             for g in self.smirk_generator_optimizer.param_groups:
+    #                 g['lr'] = self.config.train.lr
+    #         else:
+    #             self.smirk_generator_optimizer = torch.optim.Adam(self.smirk_generator.parameters(), lr=self.config.train.lr, betas=(0.5, 0.999))
+
+    #         # Apply the same choice for the generator scheduler
+    #         if self.config.train.use_one_cycle_lr:
+    #             self.smirk_generator_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #                 self.smirk_generator_optimizer, max_lr=self.config.train.lr, total_steps=n_steps,
+    #                 pct_start=15000/n_steps, anneal_strategy='cos', final_div_factor=10
+    #             )
+    #         else:
+    #             self.smirk_generator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #                 self.smirk_generator_optimizer, T_max=n_steps, eta_min=0.01 * self.config.train.lr
+    #             )
+
 
     def scheduler_step(self):
         self.encoder_scheduler.step()
@@ -327,10 +427,16 @@ class TATERTrainer(SmirkTrainer):
             losses['mica_loss'] = 0
 
         shape_losses = losses['shape_regularization'] * self.config.train.loss_weights['shape_regularization'] + \
+                                    (losses['shape_res_regularization'] * self.config.train.loss_weights['shape_res_regularization'] if not self.config.arch.TATER.Shape.use_base_encoder else 0) + \
                                     losses['mica_loss'] * self.config.train.loss_weights['mica_loss']
 
         expression_losses = losses['expression_regularization'] * self.config.train.loss_weights['expression_regularization'] + \
-                            losses['jaw_regularization'] * self.config.train.loss_weights['jaw_regularization']
+                            losses['jaw_regularization'] * self.config.train.loss_weights['jaw_regularization'] + \
+                            (losses['exp_res_regularization'] * self.config.train.loss_weights['exp_res_regularization'] if not self.config.arch.TATER.Expression.use_base_encoder else 0)
+        
+        pose_losses = losses['pose_regularization'] * self.config.train.loss_weights['pose_regularization'] + \
+                            losses['cam_regularization'] * self.config.train.loss_weights['cam_regularization'] + \
+                            (losses['pose_res_regularization'] * self.config.train.loss_weights['pose_res_regularization'] if not self.config.arch.TATER.Pose.use_base_encoder else 0)
         
         landmark_losses = losses['landmark_loss_fan'] * self.config.train.loss_weights['landmark_loss'] + \
                             losses['landmark_loss_mp'] * self.config.train.loss_weights['landmark_loss'] 
@@ -443,10 +549,11 @@ class TATERTrainer(SmirkTrainer):
                 phoneme_loss = phoneme_loss / non_silent if non_silent != 0 else phoneme_loss
                 losses["phoneme_loss"] = phoneme_loss
                 phoneme_loss = self.config.train.loss_weights['phoneme_loss'] * phoneme_loss
-               
+
         loss_first_path = (
-            (shape_losses if self.config.train.optimize_base_shape else 0) +
-            (expression_losses if self.config.train.optimize_base_expression else 0) +
+            (shape_losses if self.config.train.optimize_base_shape or not self.config.arch.TATER.Shape.use_base_encoder else 0) +
+            (expression_losses if self.config.train.optimize_base_expression or not self.config.arch.TATER.Expression.use_base_encoder else 0) +
+            (pose_losses if self.config.train.optimize_base_pose or not self.config.arch.TATER.Pose.use_base_encoder else 0) +
             (landmark_losses) +
             (fuse_generator_losses if self.config.arch.enable_fuse_generator else 0) +
             (phoneme_loss if self.using_phoneme_classifier else 0) +
@@ -487,7 +594,7 @@ class TATERTrainer(SmirkTrainer):
 
         return templates
 
-    def augment_series(self, img, masks, flame_feats, series_len, augment_scale=0.35):                            
+    def augment_series(self, img, masks, flame_feats, series_len, augment_scale=0.20):                            
         # Handle series
         num_series = len(series_len)
         series_start_idx = 0
@@ -792,7 +899,7 @@ class TATERTrainer(SmirkTrainer):
         for key in visualizations.keys():
             visualizations[key] = visualizations[key].detach().cpu()
 
-        if self.config.train.loss_weights['mica_loss'] > 0:
+        if self.config.train.loss_weights['mica_loss'] > 0:   
             mica_output_shape = self.mica(batch['img_mica'])
             mica_output = copy.deepcopy(base_output)
             mica_output['shape_params'] = mica_output_shape['shape_params']
@@ -897,6 +1004,48 @@ class TATERTrainer(SmirkTrainer):
 
         cv2.imwrite(save_path, combined_grid)
         self.save_renders_as_video(outputs, save_path[:-4] + ".mp4")
+
+    def load_model(self, resume, load_fuse_generator=True, load_encoder=True, device='cuda'):
+        loaded_state_dict = torch.load(resume, map_location=device)
+        
+        print(f'Loading checkpoint from {resume}, load_encoder={load_encoder}, load_fuse_generator={load_fuse_generator}')
+
+        # Load the main model state dict with strict=False
+        filtered_state_dict = {k: v for k, v in loaded_state_dict.items() 
+                            if (load_encoder and k.startswith('smirk_encoder')) or 
+                                (load_fuse_generator and k.startswith('smirk_generator'))}
+        
+        self.load_state_dict(filtered_state_dict, strict=False)
+
+        # Helper function to strip the specific prefix from state_dict keys
+        def strip_exact_prefix(state_dict, prefix):
+            return {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        # Load TATER submodules with strict=True
+        if self.config.arch.TATER.Expression.pretrain_path:
+            exp_pretrain_dict = torch.load(self.config.arch.TATER.Expression.pretrain_path, map_location=device)
+            exp_transformer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_transformer.")
+            exp_layer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer.")
+            
+            self.tater.exp_transformer.load_state_dict(exp_transformer_state, strict=True)
+            self.tater.exp_layer.load_state_dict(exp_layer_state, strict=True)
+        
+        if self.config.arch.TATER.Shape.pretrain_path:
+            shape_pretrain_dict = torch.load(self.config.arch.TATER.Shape.pretrain_path, map_location=device)
+            shape_transformer_state = strip_exact_prefix(shape_pretrain_dict, "tater.shape_transformer.")
+            shape_layer_state = strip_exact_prefix(shape_pretrain_dict, "tater.shape_layer.")
+            
+            self.tater.shape_transformer.load_state_dict(shape_transformer_state, strict=True)
+            self.tater.shape_layer.load_state_dict(shape_layer_state, strict=True)
+
+        if self.config.arch.TATER.Pose.pretrain_path:
+            pose_pretrain_dict = torch.load(self.config.arch.TATER.Pose.pretrain_path, map_location=device)
+            pose_transformer_state = strip_exact_prefix(pose_pretrain_dict, "tater.pose_transformer.")
+            pose_layer_state = strip_exact_prefix(pose_pretrain_dict, "tater.pose_layer.")
+            
+            self.tater.pose_transformer.load_state_dict(pose_transformer_state, strict=True)
+            self.tater.pose_layer.load_state_dict(pose_layer_state, strict=True)
+
 
 
     def save_model(self, state_dict, save_path):
