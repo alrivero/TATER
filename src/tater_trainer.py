@@ -928,14 +928,21 @@ class TATERTrainer(SmirkTrainer):
         all_image_grids = []
         all_video_frames = []
 
+        image_keys = [
+            'img', 'img_mica', 'rendered_img_base', 'rendered_img',
+            'overlap_image', 'overlap_image_pixels', 'rendered_img_mica_zero',
+            'rendered_img_zero', 'masked_1st_path', 'reconstructed_img',
+            'loss_img', '2nd_path'
+        ]
+
         for i, outputs in enumerate(outputs_array):  # Iterate over each output dictionary
             nrow = 1
 
             # Reindex tensors to discard overlap frames for all outputs after the first one
             if i > 0 and frame_overlap > 0:
-                outputs['img'] = outputs['img'][frame_overlap:]
-                outputs['rendered_img_base'] = outputs['rendered_img_base'][frame_overlap:]
-                outputs['rendered_img'] = outputs['rendered_img'][frame_overlap:]
+                for key in image_keys:
+                    if key in outputs:
+                        outputs[key] = outputs[key][frame_overlap:]
 
             # Generate overlap images if required tensors are available
             if 'img' in outputs and 'rendered_img' in outputs and 'masked_1st_path' in outputs:
@@ -951,13 +958,6 @@ class TATERTrainer(SmirkTrainer):
                 original_grid = make_grid_from_opencv_images(original_img_with_landmarks, nrow=nrow)
             else:
                 original_grid = make_grid(outputs['img'].detach().cpu(), nrow=nrow)
-
-            image_keys = [
-                'img', 'img_mica', 'rendered_img_base', 'rendered_img',
-                'overlap_image', 'overlap_image_pixels', 'rendered_img_mica_zero',
-                'rendered_img_zero', 'masked_1st_path', 'reconstructed_img',
-                'loss_img', '2nd_path'
-            ]
 
             grids = [original_grid]
 
