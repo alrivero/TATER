@@ -61,10 +61,11 @@ import torch
 
 def load_dataloaders(config):
     # ----------------------- initialize datasets ----------------------- #
-    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP = get_datasets_iHiTOP(config)
+    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP, effective_seg_count = get_datasets_iHiTOP(config)
     dataset_percentages = {
         'iHiTOP': 1.0
     }
+    train_dataset_iHiTOP[0]
     
     train_dataset = train_dataset_iHiTOP
     sampler = MixedDatasetBatchSampler([
@@ -83,7 +84,7 @@ def load_dataloaders(config):
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.num_workers, collate_fn=collate_fn)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=config.train.batch_size,
                                                 num_workers=config.train.num_workers, shuffle=False, drop_last=True, collate_fn=collate_fn)
-    return train_loader, val_loader
+    return train_loader, val_loader, effective_seg_count
 
 def linear_interpolate(landmarks, start_idx, stop_idx):
     """linear_interpolate.

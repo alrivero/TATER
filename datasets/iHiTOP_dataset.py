@@ -286,6 +286,7 @@ class iHiTOPDataset(BaseVideoDataset):
         video_group = self.video_data[v][str(s)]
         video_dict = {}
 
+
         # Gather all image data (subsample if necessary)
         for key, item in video_group.items():
             value = item[()]
@@ -369,8 +370,8 @@ class iHiTOPDataset(BaseVideoDataset):
         
         # If missing data, mark it as audio/no audio
         if "audio_phonemes" not in video_dict.keys():
-            video_dict["audio_phonemes"] = torch.empty((1,))
-            video_dict["text_phonemes"] = torch.empty((1,))
+            video_dict["audio_phonemes"] = []
+            video_dict["text_phonemes"] = []
             video_dict["silent"] = torch.tensor([True])
             video_dict["phoneme_timestamps"] = []
         elif len(["audio_phonemes"]) == 0:
@@ -385,6 +386,7 @@ class iHiTOPDataset(BaseVideoDataset):
 
 def cull_indices(hdf5_files, seg_indices, config):
     valid_mask = np.ones(len(seg_indices), dtype=bool)  # Start with all indices valid
+    effective_seg_count = 0
 
     # Loop over the seg_indices and check against the threshold
     for i, (file_idx, group_idx) in enumerate(seg_indices):
@@ -416,11 +418,15 @@ def cull_indices(hdf5_files, seg_indices, config):
             # Or too short
             if img_length < config.dataset.min_seg_len:
                 valid_mask[i] = False 
+
+            # Record effective seg count
+            if valid_mask[i]:
+                effective_seg_count += math.ceil(img_length / config.train.max_batch_len)
         except:
             print(f"Segment {group_idx} failed from {file_idx}!")
             valid_mask[i] = False
     
-    return valid_mask  # Return the boolean mask
+    return effective_seg_count, valid_mask  # Return the boolean mask
 
 def get_datasets_iHiTOP(config=None):
     # Gather all hdf5 files and number of segments in each
@@ -457,12 +463,19 @@ def get_datasets_iHiTOP(config=None):
     # Now cull indices depending on their number of removed frames
     if not os.path.exists(config.dataset.data_idxs):
         print("Data indices undefined! Defining now....")
-        np.save(config.dataset.data_idxs, cull_indices(hdf5_files, seg_indices, config))
+
+        effective_seg_count, data_idxs = cull_indices(hdf5_files, seg_indices, config)
+
+        np.save(config.dataset.data_idxs, data_idxs)
+        np.save(config.dataset.effective_seg_count, effective_seg_count)
         print("Data indices defined!")
 
     data_idxs = np.load(config.dataset.data_idxs)
+    effective_seg_count = np.load(config.dataset.effective_seg_count)
     seg_indices = seg_indices[data_idxs]
-    print(f"Segment count {len(seg_indices)}")
+    print(f"Effective Segment count {effective_seg_count}")
+    print(f"Actual Segment count {len(seg_indices)}")
+
 
     # Assert train, val, test split
     assert config.dataset.iHiTOP_train_percentage + config.dataset.iHiTOP_val_percentage + config.dataset.iHiTOP_test_percentage == 1.0
@@ -474,8 +487,6 @@ def get_datasets_iHiTOP(config=None):
 
     # this is the split used in the paper, randomly selected
     random_idxs = seg_indices
-    np.random.shuffle(random_idxs)
-
     if os.path.exists(config.dataset.final_idxs):
         random_idxs = np.load(config.dataset.final_idxs)
     else:
@@ -489,4 +500,4 @@ def get_datasets_iHiTOP(config=None):
     val_idxs = random_idxs[train_size:train_size + val_size]
     test_idxs = random_idxs[train_size + val_size:]
 
-    return iHiTOPDataset(hdf5_files, train_idxs, config), iHiTOPDataset(hdf5_files, val_idxs, config, test=True), iHiTOPDataset(hdf5_files, test_idxs, config, test=True) #, train_list, val_list, test_list
+    return iHiTOPDataset(hdf5_files, train_idxs, config), iHiTOPDataset(hdf5_files, val_idxs, config, test=True), iHiTOPDataset(hdf5_files, test_idxs, config, test=True), effective_seg_count #, train_list, val_list, test_list

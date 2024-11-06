@@ -51,7 +51,6 @@ class TATERTrainer(SmirkTrainer):
     def configure_optimizers(self, num_steps, use_default_annealing=False):
         # Adjust total steps for gradient accumulation
         effective_total_steps = num_steps // self.config.train.accumulate_steps
-        effective_total_steps = effective_total_steps * 2 if self.config.train.loss_weights.cycle_loss > 0.0 else effective_total_steps
 
         # Define max_lr, min_lr, and warmup steps directly from config
         max_lr = self.config.train.max_lr  # Use max_lr as defined in config
@@ -925,85 +924,88 @@ class TATERTrainer(SmirkTrainer):
 
         return visualizations
 
-    def save_renders_as_video(self, output_dict, output_path, fps=30):
-        img_tensor = output_dict['img']  
-        rendered_img_base_tensor = output_dict['rendered_img_base']  
-        rendered_img_tensor = output_dict['rendered_img']  
-        
-        assert img_tensor.shape[0] == rendered_img_base_tensor.shape[0] == rendered_img_tensor.shape[0]
-        
-        img_array = img_tensor.permute(0, 2, 3, 1).cpu().numpy()  
-        rendered_img_base_array = rendered_img_base_tensor.permute(0, 2, 3, 1).cpu().numpy()  
-        rendered_img_array = rendered_img_tensor.permute(0, 2, 3, 1).cpu().numpy()  
+    def save_visualizations(self, outputs_array, image_save_path, video_save_path, frame_overlap=0, show_landmarks=False, fps=30):
+        all_image_grids = []
+        all_video_frames = []
 
-        concatenated_frames = np.concatenate((img_array, rendered_img_base_array, rendered_img_array), axis=2)
+        for i, outputs in enumerate(outputs_array):  # Iterate over each output dictionary
+            nrow = 1
 
-        height, width, _ = concatenated_frames[0].shape
-        video_writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+            # Reindex tensors to discard overlap frames for all outputs after the first one
+            if i > 0 and frame_overlap > 0:
+                outputs['img'] = outputs['img'][frame_overlap:]
+                outputs['rendered_img_base'] = outputs['rendered_img_base'][frame_overlap:]
+                outputs['rendered_img'] = outputs['rendered_img'][frame_overlap:]
 
-        for frame in concatenated_frames:
-            frame_uint8 = (frame * 255).astype(np.uint8)
+            # Generate overlap images if required tensors are available
+            if 'img' in outputs and 'rendered_img' in outputs and 'masked_1st_path' in outputs:
+                outputs['overlap_image'] = outputs['img'] * 0.7 + outputs['rendered_img'] * 0.3
+                outputs['overlap_image_pixels'] = outputs['img'] * 0.7 + 0.3 * outputs['masked_1st_path']
+
+            # Landmarks visualization if enabled
+            if show_landmarks:
+                original_img_with_landmarks = batch_draw_keypoints(outputs['img'], outputs['landmarks_mp'], color=(0, 255, 0))
+                original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_mp_gt'], color=(0, 0, 255))
+                original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_fan'][:, :17], color=(255, 0, 255))
+                original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_fan_gt'][:, :17], color=(255, 255, 255))
+                original_grid = make_grid_from_opencv_images(original_img_with_landmarks, nrow=nrow)
+            else:
+                original_grid = make_grid(outputs['img'].detach().cpu(), nrow=nrow)
+
+            image_keys = [
+                'img', 'img_mica', 'rendered_img_base', 'rendered_img',
+                'overlap_image', 'overlap_image_pixels', 'rendered_img_mica_zero',
+                'rendered_img_zero', 'masked_1st_path', 'reconstructed_img',
+                'loss_img', '2nd_path'
+            ]
+
+            grids = [original_grid]
+
+            # Padding function for height alignment
+            def pad_to_match_height(tensor, target_height):
+                _, H, _ = tensor.shape if tensor.dim() == 3 else tensor.shape[1:3]
+                if H < target_height:
+                    padding = (0, 0, 0, target_height - H)
+                    tensor = F.pad(tensor, padding, mode='constant', value=0)
+                return tensor
+
+            max_height = original_grid.shape[1]
+
+            for key in image_keys:
+                if key in outputs:
+                    grid = make_grid(outputs[key].detach().cpu(), nrow=4 * self.config.train.Ke if key == '2nd_path' else nrow)
+                    grid = pad_to_match_height(grid, max_height)
+                    grids.append(grid)
+
+            combined_grid = torch.cat(grids, dim=2)
+            combined_grid = combined_grid.permute(1, 2, 0).cpu().numpy() * 255.0
+            combined_grid = np.clip(combined_grid, 0, 255).astype(np.uint8)
+            combined_grid = cv2.cvtColor(combined_grid, cv2.COLOR_RGB2BGR)
+
+            all_image_grids.append(combined_grid)
+
+            # Convert tensors to numpy arrays
+            img_array = outputs['img'].permute(0, 2, 3, 1).cpu().numpy()
+            rendered_img_base_array = outputs['rendered_img_base'].permute(0, 2, 3, 1).cpu().numpy()
+            rendered_img_array = outputs['rendered_img'].permute(0, 2, 3, 1).cpu().numpy()
+
+            concatenated_frames = np.concatenate((img_array, rendered_img_base_array, rendered_img_array), axis=2)
+            all_video_frames.extend(concatenated_frames)  # Accumulate frames for the final video
+
+        # Concatenate all image grids vertically and save as a single image
+        concatenated_image_grid = np.concatenate(all_image_grids, axis=0)  # Stack vertically
+        cv2.imwrite(image_save_path, concatenated_image_grid)
+
+        # Write all collected frames to a single video
+        height, width, _ = all_video_frames[0].shape
+        video_writer = cv2.VideoWriter(video_save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+
+        for frame in all_video_frames:
+            frame_uint8 = (frame * 255).astype(np.uint8)  # Scale frame to uint8 format
             video_writer.write(frame_uint8)
 
         video_writer.release()
 
-    def save_visualizations(self, outputs, save_path, show_landmarks=False):
-        nrow = 1
-
-        # Generate overlap images if the required tensors are available
-        if 'img' in outputs and 'rendered_img' in outputs and 'masked_1st_path' in outputs:
-            outputs['overlap_image'] = outputs['img'] * 0.7 + outputs['rendered_img'] * 0.3
-            outputs['overlap_image_pixels'] = outputs['img'] * 0.7 +  0.3 * outputs['masked_1st_path']
-
-        # Create landmarks visualization if required
-        if show_landmarks:
-            original_img_with_landmarks = batch_draw_keypoints(outputs['img'], outputs['landmarks_mp'], color=(0, 255, 0))
-            original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_mp_gt'], color=(0, 0, 255))
-            original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_fan'][:, :17], color=(255, 0, 255))
-            original_img_with_landmarks = batch_draw_keypoints(original_img_with_landmarks, outputs['landmarks_fan_gt'][:, :17], color=(255, 255, 255))
-            original_grid = make_grid_from_opencv_images(original_img_with_landmarks, nrow=nrow)
-        else:
-            original_grid = make_grid(outputs['img'].detach().cpu(), nrow=nrow)
-
-        # Define the keys for images and set appropriate row sizes
-        image_keys = ['img', 'img_mica', 'rendered_img_base', 'rendered_img', 
-                    'overlap_image', 'overlap_image_pixels', 'rendered_img_mica_zero', 
-                    'rendered_img_zero', 'masked_1st_path', 'reconstructed_img', 
-                    'loss_img', '2nd_path']
-
-        grids = [original_grid]
-        
-        # Padding function to ensure same number of rows
-        def pad_to_match_height(tensor, target_height):
-            if tensor.dim() == 3:
-                _, H, _ = tensor.shape  # Handle 3D case (C, H, W)
-            elif tensor.dim() == 4:
-                _, _, H, _ = tensor.shape  # Handle 4D case (B, C, H, W)
-            else:
-                raise ValueError(f"Unexpected tensor dimensions: {tensor.dim()}")
-
-            if H < target_height:
-                padding = (0, 0, 0, target_height - H)
-                tensor = F.pad(tensor, padding, mode='constant', value=0)
-            return tensor
-
-        # Get the maximum height (rows) among the images
-        max_height = original_grid.shape[1]
-
-        for key in image_keys:
-            if key in outputs:
-                grid = make_grid(outputs[key].detach().cpu(), nrow=4 * self.config.train.Ke if key == '2nd_path' else nrow)
-                grid = pad_to_match_height(grid, max_height)  # Pad the grid to match the maximum height
-                grids.append(grid)
-
-        # Concatenate the grids and save as an image
-        combined_grid = torch.cat(grids, dim=2)  # Concatenate along width
-        combined_grid = combined_grid.permute(1, 2, 0).cpu().numpy() * 255.0
-        combined_grid = np.clip(combined_grid, 0, 255).astype(np.uint8)
-        combined_grid = cv2.cvtColor(combined_grid, cv2.COLOR_RGB2BGR)
-
-        cv2.imwrite(save_path, combined_grid)
-        self.save_renders_as_video(outputs, save_path[:-4] + ".mp4")
 
     def load_model(self, resume, load_fuse_generator=True, load_encoder=True, device='cuda'):
         loaded_state_dict = torch.load(resume, map_location=device)
