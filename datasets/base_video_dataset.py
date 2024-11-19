@@ -36,7 +36,9 @@ class BaseVideoDataset(torch.utils.data.Dataset):
             A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, border_mode=0, p=0.9),
         ], keypoint_params=A.KeypointParams(format='xy', remove_invisible=False),  additional_targets={'mediapipe_keypoints': 'keypoints'})
 
-        self.resize = A.Compose([A.Resize(self.image_size, self.image_size)])
+        self.resize = A.Compose([
+            A.Resize(height=224, width=224, interpolation=1, p=1)
+        ], keypoint_params=A.KeypointParams(format='xy', remove_invisible=False),  additional_targets={'mediapipe_keypoints': 'keypoints'})
 
     @staticmethod
     def crop_face(frame, landmarks, scale=1.0, image_size=224):
@@ -64,6 +66,9 @@ class BaseVideoDataset(torch.utils.data.Dataset):
         while landmarks_not_checked:
             try:
                 data_dict = self.__getitem_aux__(index)
+                if 'landmarks_fan' not in data_dict.keys():
+                    break
+
                 # check if landmarks are not None
                 if data_dict is not None:
                     landmarks = data_dict['landmarks_fan']

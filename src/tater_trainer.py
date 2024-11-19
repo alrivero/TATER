@@ -982,7 +982,10 @@ class TATERTrainer(SmirkTrainer):
             combined_grid = np.clip(combined_grid, 0, 255).astype(np.uint8)
             combined_grid = cv2.cvtColor(combined_grid, cv2.COLOR_RGB2BGR)
 
-            all_image_grids.append(combined_grid)
+            if combined_grid.shape[1] != 2280:
+                cv2.imwrite(f"{image_save_path[:-4]}_error_{i}.png", combined_grid)
+
+            all_image_grids.append(combined_grid[:, :2280, :])
 
             # Convert tensors to numpy arrays
             img_array = outputs['img'].permute(0, 2, 3, 1).cpu().numpy()
@@ -993,8 +996,14 @@ class TATERTrainer(SmirkTrainer):
             all_video_frames.extend(concatenated_frames)  # Accumulate frames for the final video
 
         # Concatenate all image grids vertically and save as a single image
+        print([x.shape for x in all_image_grids])
         concatenated_image_grid = np.concatenate(all_image_grids, axis=0)  # Stack vertically
-        cv2.imwrite(image_save_path, concatenated_image_grid)
+        success = cv2.imwrite(image_save_path, concatenated_image_grid)
+        
+        if success:
+            print("Image saved successfully.")
+        else:
+            print("Failed to save the image.")
 
         # Write all collected frames to a single video
         height, width, _ = all_video_frames[0].shape

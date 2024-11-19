@@ -16,8 +16,8 @@ train:
   num_epochs: 10
   batch_size: 1
   accumulate_steps: 5
-  num_workers: 0 # Using multiprocessing in Dataset
-  log_path: logs/train_exp_latent_w_phoneme_all_pretrain_shape_pose_v5
+  num_workers: 8 # Using multiprocessing in Dataset
+  log_path: logs/train_exp_latent_w_phoneme_all_pretrain_shape_pose_v7
   log_losses_every: 10
   visualize_every: 50
   mask_ratio: 0.01  # % pixel to be retained inside the face mask
@@ -37,6 +37,8 @@ train:
   max_res_scale_iterations: 15000
   residual_schedule: "cosine"
   use_one_cycle_lr: True
+  max_batch_len: 120
+  split_overlap: 5
 
   loss_weights:
     landmark_loss: 500.0   # landmark loss weight
@@ -191,22 +193,38 @@ render:
   full_head: False  # full FLAME rendering
 
 dataset:
-  iHiTOP_hdf5_path: /local/PTSD_STOP/iHiTOP_Preprocessed/temp
-  iHiTOP_aug_workers: 8
-  iHiTOP_frame_step: 1
+  iHiTOP:
+    hdf5_path: /local/PTSD_STOP/iHiTOP_Preprocessed/data
+    frame_step: 1
 
-  # Data culling parameters
-  removed_frames_threshold: 0.15
-  max_seg_len: 120
-  min_seg_len: 9
-  data_idxs: /local/PTSD_STOP/TATER/data_idxs/remove_85_max_120_min_9_v5.npy
-  final_idxs: /local/PTSD_STOP/TATER/final_idxs/train_exp_6.npy
-  bad_files: /local/PTSD_STOP/TATER/final_idxs/bad_train_v5.npy
+    # Data culling parameters
+    removed_frames_threshold: 0.15
+    max_seg_len: 9999999
+    min_seg_len: 9
+    data_idxs: /local/PTSD_STOP/TATER/data_idxs/all_data_idxs_2.npy
+    effective_seg_count: /local/PTSD_STOP/TATER/data_idxs/all_data_count_2.npy
+    final_idxs: /local/PTSD_STOP/TATER/final_idxs/all_final_idxs_2.npy
+    bad_files: /local/PTSD_STOP/TATER/final_idxs/all_bad_2.npy
 
-  # percentage of data to use for train val test
-  iHiTOP_train_percentage: 1.0
-  iHiTOP_val_percentage: 0.0
-  iHiTOP_test_percentage: 0.0
+    # percentage of data to use for train val test
+    train_percentage: 1.0
+    val_percentage: 0.0
+    test_percentage: 0.0
+
+  VOCASET:
+    data_path: /home/arivero/VOCA
+    frame_step: 1
+
+    # Data culling parameters
+    removed_frames_threshold: 0.15
+    max_seg_len: 9999999
+    min_seg_len: 9
+    final_idxs: /local/PTSD_STOP/TATER/final_idxs/all_final_idxs_VOCASET.npy
+
+    # percentage of data to use for train val test
+    train_percentage: 1.0
+    val_percentage: 0.0
+    test_percentage: 0.0
 
   # percentage of data to use for each dataset
   LRS3_percentage: 0.0

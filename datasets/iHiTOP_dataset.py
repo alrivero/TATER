@@ -13,14 +13,14 @@ import cv2
 from multiprocessing import Pool, TimeoutError
 import time
 import math
+import debug
 
 
 class iHiTOPDataset(BaseVideoDataset):
     def __init__(self, video_data, split_idxs, config, test=False):
         super().__init__(video_data, split_idxs, config, test)
         self.name = 'iHiTOP'
-        self.num_workers = config.dataset.iHiTOP_aug_workers
-        self.iHiTOP_frame_step = config.dataset.iHiTOP_frame_step
+        self.iHiTOP_frame_step = config.dataset.iHiTOP.frame_step
 
         self.phoneme_map = self.create_phoneme_map()
 
@@ -79,10 +79,25 @@ class iHiTOPDataset(BaseVideoDataset):
     @staticmethod
     def process_frame(args):
         index, cropped_image, hull_mask, cropped_landmarks_fan, cropped_landmarks_mediapipe, repeat_transform, test, resize = args
+        
         if not test:
-            transformed = A.ReplayCompose.replay(repeat_transform, image=cropped_image, mask=1 - hull_mask, keypoints=cropped_landmarks_fan, mediapipe_keypoints=cropped_landmarks_mediapipe)
+            # Apply replayed transformation when test is False
+            transformed = A.ReplayCompose.replay(
+                repeat_transform,
+                image=cropped_image,
+                mask=1 - hull_mask,
+                keypoints=cropped_landmarks_fan,
+                mediapipe_keypoints=cropped_landmarks_mediapipe
+            )
         else:
-            transformed = resize(image=cropped_image, mask=1 - hull_mask, keypoints=cropped_landmarks_fan, mediapipe_keypoints=cropped_landmarks_mediapipe)
+            # Apply resize transformation when test is True
+            transformed = resize(
+                image=cropped_image,
+                mask=1 - hull_mask,
+                keypoints=cropped_landmarks_fan,
+                mediapipe_keypoints=cropped_landmarks_mediapipe
+            )
+
         return index, transformed
     
     def drop_audio_segments(self, video_dict):
@@ -322,6 +337,8 @@ class iHiTOPDataset(BaseVideoDataset):
                 keypoints=video_dict["landmarks_fan"][0],
                 mediapipe_keypoints=video_dict["landmarks_mp"][0]
             )["replay"]
+        else:
+            repeat_transform = None
 
         # Properly pass all arguments for multiprocessing
         args_list = [(i, video_dict["img"][i], video_dict["mask"][i], video_dict["landmarks_fan"][i],
@@ -330,20 +347,23 @@ class iHiTOPDataset(BaseVideoDataset):
 
         # Use apply_async with a timeout and maintain order
         results = []
-        with Pool(self.num_workers) as pool:
-            async_results = [pool.apply_async(self.process_frame, args=(arg,)) for arg in args_list]
+        for args in args_list:
+            results.append(self.process_frame(args))
+        
+        # with Pool(self.num_workers) as pool:
+        #     async_results = [pool.apply_async(self.process_frame, args=(arg,)) for arg in args_list]
             
-            for res in async_results:
-                try:
-                    # Set a timeout of 30 seconds for each task
-                    result = res.get(timeout=30)
-                    results.append(result)
-                except TimeoutError:
-                    print(f"{index} timed out and was skipped.")
-                    continue
+        #     for res in async_results:
+        #         try:
+        #             # Set a timeout of 30 seconds for each task
+        #             result = res.get(timeout=30)
+        #             results.append(result)
+        #         except TimeoutError:
+        #             print(f"{index} timed out and was skipped.")
+        #             continue
 
-        # Sort results by the original index to maintain the order
-        results = sorted(results, key=lambda x: x[0])
+        # # Sort results by the original index to maintain the order
+        # results = sorted(results, key=lambda x: x[0])
 
         # Unpack the sorted results
         for _, transformed in results:
@@ -408,15 +428,15 @@ def cull_indices(hdf5_files, seg_indices, config):
                 removed_frames_percentage = 0
 
             # If the percentage exceeds the threshold, mark the index as invalid
-            if removed_frames_percentage >= config.dataset.removed_frames_threshold:
+            if removed_frames_percentage >= config.dataset.iHiTOP.removed_frames_threshold:
                 valid_mask[i] = False  # Mark invalid if threshold is exceeded
 
             # Also, remove if img_length is too long
-            if img_length > config.dataset.max_seg_len:
+            if img_length > config.dataset.iHiTOP.max_seg_len:
                 valid_mask[i] = False 
 
             # Or too short
-            if img_length < config.dataset.min_seg_len:
+            if img_length < config.dataset.iHiTOP.min_seg_len:
                 valid_mask[i] = False 
 
             # Record effective seg count
@@ -433,25 +453,26 @@ def get_datasets_iHiTOP(config=None):
     hdf5_files = []
     seg_counts = []
     bad_files = []
-    for file in os.listdir(config.dataset.iHiTOP_hdf5_path):
+    for file in os.listdir(config.dataset.iHiTOP.hdf5_path):
         hdf5_file = None
         try:
             hdf5_file = h5py.File(os.path.join(
-                config.dataset.iHiTOP_hdf5_path,
+                config.dataset.iHiTOP.hdf5_path,
                 file
             ), 'r')
             seg_count = len(hdf5_file.keys())
 
             hdf5_files.append(hdf5_file)
             seg_counts.append(seg_count)
+            break
         except:
             print(f"Bad File {file}")
             bad_files.append(file)
             if hdf5_file is not None:
                 hdf5_file.close()
     
-    if not os.path.exists(config.dataset.bad_files):
-        np.save(config.dataset.bad_files, np.array(bad_files))
+    if not os.path.exists(config.dataset.iHiTOP.bad_files):
+        np.save(config.dataset.iHiTOP.bad_files, np.array(bad_files))
 
     seg_indices = []
     # Set up indexing to access all of these files
@@ -461,43 +482,43 @@ def get_datasets_iHiTOP(config=None):
     seg_indices = np.concatenate(seg_indices)
 
     # Now cull indices depending on their number of removed frames
-    if not os.path.exists(config.dataset.data_idxs):
+    if not os.path.exists(config.dataset.iHiTOP.data_idxs):
         print("Data indices undefined! Defining now....")
 
         effective_seg_count, data_idxs = cull_indices(hdf5_files, seg_indices, config)
 
-        np.save(config.dataset.data_idxs, data_idxs)
-        np.save(config.dataset.effective_seg_count, effective_seg_count)
+        np.save(config.dataset.iHiTOP.data_idxs, data_idxs)
+        np.save(config.dataset.iHiTOP.effective_seg_count, effective_seg_count)
         print("Data indices defined!")
 
-    data_idxs = np.load(config.dataset.data_idxs)
-    effective_seg_count = np.load(config.dataset.effective_seg_count)
+    data_idxs = np.load(config.dataset.iHiTOP.data_idxs)
+    effective_seg_count = np.load(config.dataset.iHiTOP.effective_seg_count)
     seg_indices = seg_indices[data_idxs]
     print(f"Effective Segment count {effective_seg_count}")
     print(f"Actual Segment count {len(seg_indices)}")
 
 
     # Assert train, val, test split
-    assert config.dataset.iHiTOP_train_percentage + config.dataset.iHiTOP_val_percentage + config.dataset.iHiTOP_test_percentage == 1.0
+    assert config.dataset.iHiTOP.train_percentage + config.dataset.iHiTOP.val_percentage + config.dataset.iHiTOP.test_percentage == 1.0
     total = len(seg_indices)
 
-    train_size = int(config.dataset.iHiTOP_train_percentage * total)
-    val_size = int(config.dataset.iHiTOP_val_percentage * total)
+    train_size = int(config.dataset.iHiTOP.train_percentage * total)
+    val_size = int(config.dataset.iHiTOP.val_percentage * total)
     test_size = total - train_size - val_size
 
     # this is the split used in the paper, randomly selected
     random_idxs = seg_indices
-    if os.path.exists(config.dataset.final_idxs):
-        random_idxs = np.load(config.dataset.final_idxs)
+    if os.path.exists(config.dataset.iHiTOP.final_idxs):
+        random_idxs = np.load(config.dataset.iHiTOP.final_idxs)
     else:
         random_idxs = seg_indices
         np.random.shuffle(random_idxs)
         print("Shuffled indices undefined! Defining now....")
-        np.save(config.dataset.final_idxs, random_idxs)
+        np.save(config.dataset.iHiTOP.final_idxs, random_idxs)
         print("Shuffled indices defined!")
 
     train_idxs = random_idxs[:train_size]
     val_idxs = random_idxs[train_size:train_size + val_size]
     test_idxs = random_idxs[train_size + val_size:]
 
-    return iHiTOPDataset(hdf5_files, train_idxs, config), iHiTOPDataset(hdf5_files, val_idxs, config, test=True), iHiTOPDataset(hdf5_files, test_idxs, config, test=True), effective_seg_count #, train_list, val_list, test_list
+    return iHiTOPDataset(hdf5_files, train_idxs, config, test=True), iHiTOPDataset(hdf5_files, val_idxs, config, test=True), iHiTOPDataset(hdf5_files, test_idxs, config, test=True), effective_seg_count #, train_list, val_list, test_list
