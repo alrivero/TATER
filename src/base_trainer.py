@@ -68,7 +68,6 @@ class BaseTrainer(nn.Module):
             self.smirk_generator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.smirk_generator_optimizer, T_max=n_steps,
                                                                                     eta_min=0.01 * self.config.train.lr)
 
-        
     def load_random_template(self, num_expressions=50):
         random_key = random.choice(list(self.templates.keys()))
         templates = self.templates[random_key]

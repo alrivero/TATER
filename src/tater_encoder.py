@@ -88,6 +88,7 @@ class TATEREncoder(SmirkEncoder):
         if self.use_interp_linear_layer:
             self.residual_layer = nn.Linear(self.emb_size * 2, self.emb_size)
 
+        self.device = next(self.parameters()).device
 
     def update_residual_scale(self, iteration):
         """Update the residual scaling factor based on the current iteration."""
@@ -168,10 +169,10 @@ class TATEREncoder(SmirkEncoder):
 
         # Initialize the padded tensor with zeros
         num_tensors = len(lengths)
-        padded_tensor = torch.zeros((num_tensors, max_len, combined_tensor.shape[1]), dtype=combined_tensor.dtype).cuda()
+        padded_tensor = torch.zeros((num_tensors, max_len, combined_tensor.shape[1]), dtype=combined_tensor.dtype).to(self.device)
         
         # Initialize the attention mask (T/F) with False
-        attention_mask = torch.zeros((num_tensors, max_len), dtype=torch.bool).cuda()
+        attention_mask = torch.zeros((num_tensors, max_len), dtype=torch.bool).to(self.device)
         
         start_idx = 0
         for i, length in enumerate(lengths):

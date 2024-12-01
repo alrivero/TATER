@@ -255,7 +255,6 @@ class FLAME(nn.Module):
         if zero_shape:
             shape_params = torch.zeros_like(shape_params).to(shape_params.device)
 
-
         if zero_pose:
             pose_params = torch.zeros_like(pose_params).to(shape_params.device)
             pose_params[...,0] = 0.2
