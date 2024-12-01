@@ -5,6 +5,7 @@ import albumentations as A
 import numpy as np
 from skimage import transform as trans
 import cv2
+import traceback
 
 
 class BaseVideoDataset(torch.utils.data.Dataset):
@@ -81,6 +82,8 @@ class BaseVideoDataset(torch.utils.data.Dataset):
             except Exception as e:
                 # raise e
                 print('Error in loading data. Trying again...', e)
+                error_message = traceback.format_exc()
+                print(f"Error captured: {error_message}")
                 index = np.random.randint(0, len(self.split_idxs))
         
         return data_dict

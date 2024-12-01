@@ -7,6 +7,9 @@ import os
 from datasets.data_utils import load_dataloaders
 import debug
 import traceback
+import warnings
+import wandb
+from torch.distributed import get_rank, is_initialized
 
 def parse_args():
     conf = OmegaConf.load(sys.argv[1])
@@ -58,7 +61,7 @@ def batch_split_into_windows(batch, config):
             split_batch["audio_phonemes"].append(torch.empty((1,)))
 
         if len(batch["phoneme_timestamps"][split_idx]) > 0:
-            adjusted_phonemes = [(x, y, s - frame_idx, e - frame_idx) for (x, y, s, e) in batch["phoneme_timestamps"][split_idx] if (s >= frame_idx and e <= frame_idx + remaining + overlap)]
+            adjusted_phonemes = [(x, y, s - frame_idx, e - frame_idx) for (x, y, s, e) in batch["phoneme_timestamps"][split_idx] if (s >= frame_idx and e < frame_idx + remaining + overlap)]
             split_batch["phoneme_timestamps"].append(adjusted_phonemes)
         else:
             split_batch["phoneme_timestamps"].append([])
@@ -94,6 +97,8 @@ def batch_split_into_windows(batch, config):
 if __name__ == '__main__':
     # ----------------------- initialize configuration ----------------------- #
     config = parse_args()
+
+    warnings.filterwarnings("ignore", message="GaussNoise could work incorrectly in ReplayMode for other input data")
 
     # ----------------------- initialize log directories ----------------------- #
     os.makedirs(config.train.log_path, exist_ok=True)

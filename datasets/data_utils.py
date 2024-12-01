@@ -1,6 +1,8 @@
 import torch
 from datasets.iHiTOP_dataset import get_datasets_iHiTOP
+from datasets.iHiTOP_dataset_parallel import get_datasets_iHiTOP_parallel, iHiTOPDatasetParallel
 from datasets.mixed_dataset_sampler import MixedDatasetBatchSampler
+from torch.utils.data._utils.collate import default_collate, default_collate_err_msg_format
 import os
 
 import torch
@@ -62,10 +64,11 @@ import torch
 def load_dataloaders(config):
     # ----------------------- initialize datasets ----------------------- #
     train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP, effective_seg_count = get_datasets_iHiTOP(config)
+    import pdb; pdb.set_trace()
     dataset_percentages = {
         'iHiTOP': 1.0
     }
-    train_dataset_iHiTOP[0]
+    print(train_dataset_iHiTOP[0])
     
     train_dataset = train_dataset_iHiTOP
     sampler = MixedDatasetBatchSampler([
@@ -84,6 +87,45 @@ def load_dataloaders(config):
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.num_workers, collate_fn=collate_fn)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=config.train.batch_size,
                                                 num_workers=config.train.num_workers, shuffle=False, drop_last=True, collate_fn=collate_fn)
+    return train_loader, val_loader, effective_seg_count
+
+def load_dataloaders_parallel(config, rank, world_size):
+    # ---------------- Initialize datasets ---------------- #
+    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP, effective_seg_count = get_datasets_iHiTOP_parallel(config)
+    # train_dataset_iHiTOP[0]
+
+    # Assign the train dataset
+    train_dataset = train_dataset_iHiTOP
+
+    # ---------------- Use DistributedSampler ---------------- #
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset, 
+        num_replicas=world_size, 
+        rank=rank
+    )
+
+    # Training loader with DistributedSampler
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=config.train.batch_size,
+        num_workers=config.train.num_workers,
+        worker_init_fn=iHiTOPDatasetParallel.hdf5_worker_init,  # Use the worker initialization function
+        pin_memory=True,
+        prefetch_factor=2,  # Optimize prefetching for A100
+    )
+
+    # Validation dataset setup (no DistributedSampler)
+    val_dataset = torch.utils.data.ConcatDataset([val_dataset_iHiTOP])
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=config.train.batch_size,
+        num_workers=config.train.num_workers,
+        shuffle=False,
+        drop_last=True,
+        worker_init_fn=iHiTOPDatasetParallel.hdf5_worker_init,  # Use the worker initialization function
+    )
+
     return train_loader, val_loader, effective_seg_count
 
 def linear_interpolate(landmarks, start_idx, stop_idx):
@@ -132,8 +174,6 @@ def create_LRS3_lists(lrs3_path, lrs3_landmarks_path):
     trainval_folder_list = list(os.listdir(f"{lrs3_path}/trainval"))
     train_folder_list, val_folder_list = train_test_split(trainval_folder_list, test_size=0.2, random_state=42)
     test_folder_list = list(os.listdir(f"{lrs3_path}/test"))
-
-
 
     def gather_LRS3_split(folder_list, split="trainval"):
         list_ = []
