@@ -416,6 +416,8 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         if "text" in video_dict.keys():
             del video_dict["text"]
             del video_dict["text_phonemes"]
+        
+        video_dict["audio_feat"] = video_dict["hubert_frame_level_embeddings"]
 
         return video_dict
 
@@ -473,7 +475,6 @@ def cull_indices(hdf5_file_paths, seg_indices, config):
             hdf5_file.close()
 
     return effective_seg_count, valid_mask  # Return the boolean mask
-
 
 def get_datasets_iHiTOP_parallel(config=None):
     if get_rank() == 0:

@@ -3,6 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from scipy.spatial.transform import Rotation as R
 from .models.transformer.temporaltransformer import TemporalTransformer
+from .models.transformer.crossattentiontransformer import CrossAttentionTransformer
 from .smirk_encoder import SmirkEncoder
 
 def initialize_transformer_xavier(m, scale=1e-4):
@@ -42,9 +43,15 @@ class TATEREncoder(SmirkEncoder):
         self.use_latent_exp = config.arch.TATER.Expression.use_latent
         self.add_to_flame_exp = config.arch.TATER.Expression.add_to_flame
         if not self.use_base_exp:
-            self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
             self.exp_emb_size = config.arch.TATER.Expression.linear_size
             self.use_exp_linear = config.arch.TATER.Expression.use_linear
+            self.exp_use_audio = config.arch.TATER.Expression.use_audio
+
+            if self.exp_use_audio:
+                self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
+            else:
+                self.exp_transformer = CrossAttentionTransformer(config.arch.TATER.Expression.CrossAttentionTransformer)
+
             if self.use_exp_linear:
                 exp_offset = 0 # 1 if self.apply_linear_before_res else 0
                 self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3 + exp_offset)
@@ -256,7 +263,7 @@ class TATEREncoder(SmirkEncoder):
         z = torch.where(singular, z_sing, z)
         return torch.stack((x, y, z), dim=1)
 
-    def forward(self, img_batch, og_series_len):
+    def forward(self, img_batch, og_series_len, audio_batch=None):
         outputs = {}
         if isinstance(img_batch, list):
             img_cat = torch.cat(img_batch)
@@ -288,7 +295,19 @@ class TATEREncoder(SmirkEncoder):
                 sample_rate=self.downsample_rate
             )
 
-            exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len)
+            if self.exp_use_audio:
+                audio_batch = torch.cat(audio_batch)
+                audio_encodings_down, _, series_len = self.pad_and_create_mask(
+                    audio_batch,
+                    og_series_len,
+                    downsample=self.interp_down_residual,
+                    sample_rate=self.downsample_rate
+                )
+
+                exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, attention_mask, series_len)
+            else:
+                exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len)
+
             outputs['expression_residuals_down'] = exp_residual_out
 
             if self.apply_linear_before_res and self.use_exp_linear:

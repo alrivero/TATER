@@ -792,7 +792,11 @@ class TATERTrainerParallel(SmirkTrainer):
         if self.config.train.freeze_generator_in_second_path:
             reconstructed_img_2nd_path = reconstructed_img_2nd_path.detach()
 
-        recon_feats = self.tater(reconstructed_img_2nd_path.view(Ke * B, C, H, W), series_len) 
+        if self.tater.exp_use_audio:
+            dummy_audio = torch.zeros(Ke * B, 1024)
+            recon_feats = self.tater(reconstructed_img_2nd_path.view(Ke * B, C, H, W), series_len, audio_batch=dummy_audio) 
+        else:
+            recon_feats = self.tater(reconstructed_img_2nd_path.view(Ke * B, C, H, W), series_len) 
 
         flame_output_2nd_path_2 = self.flame.forward(recon_feats)
         rendered_img_2nd_path_2 = self.renderer.forward(flame_output_2nd_path_2['vertices'], recon_feats['cam'])['rendered_img']
@@ -852,7 +856,11 @@ class TATERTrainerParallel(SmirkTrainer):
 
         self.set_base_freeze()
         series_len = [b.shape[0] for b in batch["img"]]
-        all_params = self.tater(batch["img"], series_len)
+        
+        if self.tater.exp_use_audio:
+            all_params = self.tater(batch["img"], series_len, audio_batch=batch["audio_feat"])
+        else:
+            all_params = self.tater(batch["img"], series_len)
 
         to_concat = ['flag_landmarks_fan', 'img', 'img_mica', 'landmarks_fan', 'landmarks_mp', 'mask']
         for key in to_concat:

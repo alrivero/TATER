@@ -156,7 +156,7 @@ def train(rank, world_size, config):
                     if not batch:
                         continue
 
-                    framewise_keys = ["flag_landmarks_fan", "img", "img_mica", "landmarks_fan", "landmarks_mp", "mask"]
+                    framewise_keys = ["flag_landmarks_fan", "img", "audio_feat", "img_mica", "landmarks_fan", "landmarks_mp", "mask"]
                     batchwise_keys = ["fps", "audio_sample_rate", "silent"]
                     extra_keys = [
                         "audio_phonemes",
