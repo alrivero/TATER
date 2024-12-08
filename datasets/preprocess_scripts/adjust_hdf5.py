@@ -791,10 +791,8 @@ def process_video(root_directory, video_title, transcript_df, temp_dir, new_dir,
     #     return None
 
     # Define our temporary hdf5 file
-    def manage_hdf5_file(temp_hdf5_path, video_title, gpu_queue, gpu_ID, process_ID):
     try:
         temp_hdf5_file = h5py.File(temp_hdf5_path, 'r+')
-        return temp_hdf5_file  # Return the successfully opened file
     except Exception as e:
         print(f"Problem creating/opening HDF5 file for {video_title}!")
         print(e)
@@ -813,11 +811,10 @@ def process_video(root_directory, video_title, transcript_df, temp_dir, new_dir,
         try:
             temp_hdf5_file = h5py.File(temp_hdf5_path, 'w')
             print(f"New HDF5 file created at {temp_hdf5_path}.")
-            return temp_hdf5_file  # Return the newly created file
         except Exception as creation_error:
             print(f"Failed to create a new HDF5 file at {temp_hdf5_path}: {creation_error}")
             gpu_queue.put((gpu_ID, process_ID))
-            return None  # Exit if unable to create a new file
+            return None
 
     # Next, define all segments present in video
     video_segments, all_ids = define_segments(transcript_df)
@@ -863,7 +860,7 @@ def process_video(root_directory, video_title, transcript_df, temp_dir, new_dir,
     # Process each segment
     silent_offset = 0
     k = 0
-    for i, segment in enumerate(tqdm(video_segments, desc=f"Processing {video_title}", position=int(gpu_ID))):
+    for i, segment in enumerate(tqdm(video_segments, desc=f"Processing {video_title}", position=int(gpu_ID * 3 + process_ID))):
         try:
             if segment["speaker_role"] != "participant":
                 if segment["id"] in og_id_dict.keys() and og_id_dict[segment["id"]] in temp_hdf5_file.keys():
@@ -872,9 +869,9 @@ def process_video(root_directory, video_title, transcript_df, temp_dir, new_dir,
                 continue
             elif segment["speaker_role"] == "participant" and segment["id"] in og_id_dict.keys():
                 if segment["text"] == ''.join(s.decode('utf-8') for s in temp_hdf5_file[og_id_dict[segment["id"]]]["text"][()]):
-                    # rename_hdf5_group(temp_hdf5_file, og_id_dict[segment["id"]], f"N{k}")
+                    rename_hdf5_group(temp_hdf5_file, og_id_dict[segment["id"]], f"N{k}")
                     # # print(f"Completed Participant segment {str(i)} skipped! Renamed to {k}")
-                    # k += 1
+                    k += 1
                     continue
                 else:
                     del temp_hdf5_file[og_id_dict[segment["id"]]]
@@ -993,7 +990,7 @@ def save_to_hdf5(root_directory, temp_dir, new_dir, log_file_path, gpus, tasks_p
     all_transcript_df['filename_stripped'] = all_transcript_df['filename'].str.replace('_formatted.csv', '', regex=False)
 
     transcript_titles = sorted(all_transcript_df["filename_stripped"].unique())
-    video_titles = sorted(os.listdir(os.path.join(root_directory, "all_videos")))
+    video_titles = sorted(os.listdir(temp_dir))
 
     # Extract base names for both transcript and video titles, and create dictionaries
     transcript_dict = {os.path.splitext(t)[0]: t for t in transcript_titles}
