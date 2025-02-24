@@ -1,3 +1,6 @@
 [submodule "external/Visual_Speech_Recognition_for_Multiple_Languages"]
 	path = external/Visual_Speech_Recognition_for_Multiple_Languages
 	url = https://github.com/mpc001/Visual_Speech_Recognition_for_Multiple_Languages.git
+[submodule "external/stylegan-v"]
+	path = external/stylegan-v
+	url = https://github.com/universome/stylegan-v.git
