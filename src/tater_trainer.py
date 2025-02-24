@@ -1058,6 +1058,8 @@ class TATERTrainer(SmirkTrainer):
             
             self.tater.shape_transformer.load_state_dict(shape_transformer_state, strict=True)
             self.tater.shape_layer.load_state_dict(shape_layer_state, strict=True)
+        
+        print(self.tater.shape_encoder)
 
         if self.config.arch.TATER.Pose.pretrain_path:
             pose_pretrain_dict = torch.load(self.config.arch.TATER.Pose.pretrain_path, map_location=device)

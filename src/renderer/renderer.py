@@ -47,9 +47,9 @@ def keep_vertices_and_update_faces(faces, vertices_to_keep):
     return updated_faces
 
 class Renderer(nn.Module):
-    def __init__(self, render_full_head=False, obj_filename='assets/head_template.obj'):
+    def __init__(self, render_full_head=False, obj_filename='assets/head_template.obj', image_size=224):
         super(Renderer, self).__init__()
-        self.image_size = 224
+        self.image_size = image_size
 
         verts, faces, aux = load_obj(obj_filename)
         uvcoords = aux.verts_uvs[None, ...]      # (N, V, 2)

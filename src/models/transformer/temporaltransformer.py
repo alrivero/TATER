@@ -3,6 +3,7 @@ from torch import nn
 from random import randint
 from torch.nn.functional import pad
 from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositionalEncoding
+from random import random
 
 # Resnet Blocks
 class TemporalTransformer(nn.Module):
@@ -41,6 +42,10 @@ class TemporalTransformer(nn.Module):
         # Final layer used to compute residual and eval toke
         self.res_out = nn.Linear(conf.attention.hidden_size, conf.attention.hidden_size)
         self.eval_out = nn.Linear(conf.attention.hidden_size, conf.attention.hidden_size)
+
+        # Introduce a masking token
+        self.mask_token = torch.rand(conf.attention.hidden_size)
+        self.mask_token = torch.nn.Parameter(self.mask_token)
         
         # Decide if we're using dropout in our final layer
         if conf.final_dropout.enable:
@@ -48,7 +53,7 @@ class TemporalTransformer(nn.Module):
         else:
             self.final_dropout = None
 
-    def forward(self, x, attention_mask, series_len=None):
+    def forward(self, x, attention_mask, series_len=None, token_mask=None):
         B, S, D = x.shape
 
         # Apply our positional encoding
@@ -57,6 +62,10 @@ class TemporalTransformer(nn.Module):
                 x,
                 series_len=series_len
             )
+
+        # Mask tokens if necessary
+        if token_mask is not None:
+            x[token_mask] = self.mask_token
 
         # Insert our eval token at the end of each sequence by modifying x and attention masks
         x = torch.cat((x, self.eval_token.expand(B, 1, -1)), dim=-2)

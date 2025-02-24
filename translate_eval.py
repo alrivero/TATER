@@ -164,7 +164,7 @@ if __name__ == '__main__':
                         "roberta",
                         "roberta_pca_5",
                         "valence_arousal",
-                        "hubert_frame_level_embeddings",
+                        "hubert_frame_level_embeddings_new",
                         "wav2vec2_frame_level_embeddings",
                         "phoneme_timestamps",
                         "text_phonemes"

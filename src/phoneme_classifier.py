@@ -10,7 +10,7 @@ class PhonemeClassifier(nn.Module):
         self.type = config.arch.Phoneme_Classifier.type  # Correct config access
         if self.type == "Linear":
             if config.arch.Phoneme_Classifier.use_latent:
-                self.linear_out = torch.nn.Linear(960, 10)
+                self.linear_out = torch.nn.Linear(640, 10)
             else:
                 self.linear_out = torch.nn.Linear(56, 10)
         elif self.type == "Transformer":

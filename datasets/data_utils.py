@@ -3,9 +3,10 @@ from datasets.iHiTOP_dataset import get_datasets_iHiTOP
 from datasets.iHiTOP_dataset_parallel import get_datasets_iHiTOP_parallel, iHiTOPDatasetParallel
 from datasets.mixed_dataset_sampler import MixedDatasetBatchSampler
 from torch.utils.data._utils.collate import default_collate, default_collate_err_msg_format
+from collections.abc import Mapping, Sequence
 import os
+import numpy as np
 
-import torch
 
 # def iHiTOP_collate(batch):
 #     # Extract the "img" tensors and other keys
@@ -61,10 +62,76 @@ import torch
 
 #     return combined_batch
 
+def diagnostic_collate(batch, key_path="root"):
+    """
+    A diagnostic version of PyTorch's default_collate function to identify problematic items.
+    Prints key paths and item details during collation.
+    """
+    elem = batch[0]
+
+    try:
+        # If the batch is a tensor, stack it
+        if isinstance(elem, torch.Tensor):
+            print(f"Key: '{key_path}' | Collating Tensor: Shapes = {[item.shape for item in batch]}")
+            return torch.stack(batch, dim=0)
+
+        # If the batch is a numpy array, convert to tensor and stack
+        elif isinstance(elem, np.ndarray):
+            print(f"Key: '{key_path}' | Collating Numpy Array: Shapes = {[item.shape for item in batch]}")
+            return torch.stack([torch.as_tensor(item) for item in batch], dim=0)
+
+        # If the batch is a Mapping (i.e., dictionary), apply collate recursively
+        elif isinstance(elem, Mapping):
+            print(f"Key: '{key_path}' | Collating Dictionary: Keys = {list(elem.keys())}")
+            return {key: diagnostic_collate([d[key] for d in batch], key_path=f"{key_path}.{key}") for key in elem}
+
+        # If the batch is a Sequence (e.g., list), apply collate recursively
+        elif isinstance(elem, Sequence) and not isinstance(elem, str):
+            print(f"Key: '{key_path}' | Collating Sequence: Lengths = {[len(item) for item in batch]}")
+            return [diagnostic_collate(samples, key_path=f"{key_path}[{i}]") for i, samples in enumerate(zip(*batch))]
+
+        # If the batch is a scalar (e.g., int or float), convert to tensor
+        elif isinstance(elem, (int, float)):
+            print(f"Key: '{key_path}' | Collating Scalar: Values = {batch}")
+            return torch.tensor(batch)
+
+        else:
+            raise TypeError(f"Unsupported type for collation at key '{key_path}': {type(elem)}")
+
+    except Exception as e:
+        print(f"Error while collating key '{key_path}': {e}")
+        raise e
+
+def collate_fn(batch):
+    combined_batch = {}
+    
+    # Get the keys present in any of the batch items
+    all_keys = set(key for item in batch for key in item.keys())
+    
+    for key in all_keys:
+        combined_values = []
+        first_valid_item = next((b[key] for b in batch if key in b), None)
+        
+        for item in batch:
+            if key in item:
+                combined_values.append(item[key])
+            else:
+                # Insert None if the type of first_valid_item is unsupported
+                nan_dummy = None
+                if isinstance(first_valid_item, torch.Tensor):
+                    nan_dummy = torch.full_like(first_valid_item, float('nan'))
+                elif isinstance(first_valid_item, np.ndarray):
+                    nan_dummy = np.full_like(first_valid_item, np.nan)
+                
+                combined_values.append(nan_dummy)
+
+        combined_batch[key] = combined_values
+
+    return combined_batch
+
 def load_dataloaders(config):
     # ----------------------- initialize datasets ----------------------- #
-    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP, effective_seg_count = get_datasets_iHiTOP(config)
-    import pdb; pdb.set_trace()
+    train_dataset_iHiTOP, val_dataset_iHiTOP, test_dataset_iHiTOP, effective_seg_count = get_datasets_iHiTOP_parallel(config)
     dataset_percentages = {
         'iHiTOP': 1.0
     }
@@ -76,12 +143,6 @@ def load_dataloaders(config):
                                         ], 
                                        list(dataset_percentages.values()), 
                                        config.train.batch_size, len(train_dataset_iHiTOP))
-    def collate_fn(batch):
-        combined_batch = {}
-        for key in batch[0].keys():
-            combined_batch[key] = [b[key] for b in batch]
-
-        return combined_batch
     
     val_dataset = torch.utils.data.ConcatDataset([val_dataset_iHiTOP])
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.num_workers, collate_fn=collate_fn)
@@ -113,10 +174,11 @@ def load_dataloaders_parallel(config, rank, world_size):
         worker_init_fn=iHiTOPDatasetParallel.hdf5_worker_init,  # Use the worker initialization function
         pin_memory=True,
         prefetch_factor=2,  # Optimize prefetching for A100
+        collate_fn=collate_fn,
     )
 
     # Validation dataset setup (no DistributedSampler)
-    val_dataset = torch.utils.data.ConcatDataset([val_dataset_iHiTOP])
+    val_dataset = val_dataset_iHiTOP
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=config.train.batch_size,
@@ -124,8 +186,8 @@ def load_dataloaders_parallel(config, rank, world_size):
         shuffle=False,
         drop_last=True,
         worker_init_fn=iHiTOPDatasetParallel.hdf5_worker_init,  # Use the worker initialization function
+        collate_fn=collate_fn,
     )
-
     return train_loader, val_loader, effective_seg_count
 
 def linear_interpolate(landmarks, start_idx, stop_idx):

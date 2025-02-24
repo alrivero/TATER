@@ -5,6 +5,7 @@ from scipy.spatial.transform import Rotation as R
 from .models.transformer.temporaltransformer import TemporalTransformer
 from .models.transformer.crossattentiontransformer import CrossAttentionTransformer
 from .smirk_encoder import SmirkEncoder
+import torch.nn.functional as F
 
 def initialize_transformer_xavier(m, scale=1e-4):
     """Xavier initialization for transformer layers with small random values."""
@@ -16,6 +17,11 @@ def initialize_transformer_xavier(m, scale=1e-4):
     elif isinstance(m, nn.LayerNorm):
         nn.init.ones_(m.weight)
         nn.init.zeros_(m.bias)
+
+D_EXP_DEFAULT = 960
+D_AUDIO_DEFAULT = 768
+D_SHAPE_DEFAULT = 960
+D_POSE_DEFAULT = 576
 
 class TATEREncoder(SmirkEncoder):
     def __init__(self, config, n_exp=50, n_shape=300) -> None:
@@ -42,34 +48,62 @@ class TATEREncoder(SmirkEncoder):
         self.use_base_exp = config.arch.TATER.Expression.use_base_encoder
         self.use_latent_exp = config.arch.TATER.Expression.use_latent
         self.add_to_flame_exp = config.arch.TATER.Expression.add_to_flame
+        self.exp_use_audio = False
+        self.use_exp_linear_downsample = False
         if not self.use_base_exp:
+            self.exp_use_audio = config.arch.TATER.Expression.use_audio
             self.exp_emb_size = config.arch.TATER.Expression.linear_size
             self.use_exp_linear = config.arch.TATER.Expression.use_linear
-            self.exp_use_audio = config.arch.TATER.Expression.use_audio
+            self.use_exp_linear_downsample = config.arch.TATER.Expression.use_linear_downsample
 
             if self.exp_use_audio:
-                self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
-            else:
                 self.exp_transformer = CrossAttentionTransformer(config.arch.TATER.Expression.CrossAttentionTransformer)
+                self.residual_linear = nn.Linear(self.exp_emb_size+ 44, n_exp + 2 + 3)
+            else:
+                self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
 
             if self.use_exp_linear:
                 exp_offset = 0 # 1 if self.apply_linear_before_res else 0
-                self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3 + exp_offset)
+                if self.exp_use_audio:
+                    self.exp_layer = nn.Linear(2 * (self.exp_emb_size+ 44), n_exp + 2 + 3 + exp_offset)
+                else:
+                    self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3 + exp_offset)
+
+            if self.use_exp_linear_downsample:
+                if self.exp_use_audio:
+                    self.exp_layer_down = nn.Linear(D_EXP_DEFAULT, self.exp_emb_size+ 44)
+                    self.exp_layer_audio_down = nn.Linear(D_AUDIO_DEFAULT, self.exp_emb_size)
+                else:
+                    self.exp_layer_down = nn.Linear(D_EXP_DEFAULT, self.exp_emb_size)
 
             if config.arch.TATER.Expression.init_near_zero:
                 self.exp_transformer.apply(init_xavier)
                 torch.nn.init.zeros_(self.exp_layer.weight)
                 torch.nn.init.zeros_(self.exp_layer.bias)
 
+            if self.exp_use_audio:
+                self.exp_transformer.encoder_2.apply(init_xavier)
+                self.exp_transformer.encoder_2_cross_layers.apply(init_xavier)
+                self.exp_transformer.encoder_1_cross_layers.apply(init_xavier)
+                self.exp_transformer.concat_layers.apply(init_xavier)
+                torch.nn.init.zeros_(self.exp_layer.weight)
+                torch.nn.init.zeros_(self.exp_layer.bias)
+
         self.use_base_shape = config.arch.TATER.Shape.use_base_encoder
         self.use_latent_shape = config.arch.TATER.Shape.use_latent
         self.add_to_flame_shape = config.arch.TATER.Shape.add_to_flame
+        self.use_shape_linear_downsample = False
         if not self.use_base_shape:
             self.shape_transformer = TemporalTransformer(config.arch.TATER.Shape.Transformer)
             self.shape_emb_size = config.arch.TATER.Shape.linear_size
             self.use_shape_linear = config.arch.TATER.Shape.use_linear
+            self.use_shape_linear_downsample = config.arch.TATER.Shape.use_linear_downsample
+
             if self.use_shape_linear:
                 self.shape_layer = nn.Linear(self.shape_emb_size, n_shape)
+            
+            if self.use_shape_linear_downsample:
+                self.shape_layer_down = nn.Linear(D_SHAPE_DEFAULT, self.shape_emb_size)
 
             if config.arch.TATER.Shape.init_near_zero:
                 self.shape_transformer.apply(init_xavier)
@@ -79,12 +113,18 @@ class TATEREncoder(SmirkEncoder):
         self.use_base_pose = config.arch.TATER.Pose.use_base_encoder
         self.use_latent_pose = config.arch.TATER.Pose.use_latent
         self.add_to_flame_pose = config.arch.TATER.Pose.add_to_flame
+        self.use_pose_linear_downsample = False
         if not self.use_base_pose:
             self.pose_transformer = TemporalTransformer(config.arch.TATER.Pose.Transformer)
             self.pose_emb_size = config.arch.TATER.Pose.linear_size
             self.use_pose_linear = config.arch.TATER.Pose.use_linear
+            self.use_pose_linear_downsample = config.arch.TATER.Pose.use_linear_downsample
+
             if self.use_pose_linear:
                 self.pose_layer = nn.Linear(self.pose_emb_size, 18)
+
+            if self.use_pose_linear_downsample:
+                self.pose_layer_down = nn.Linear(D_POSE_DEFAULT, self.pose_emb_size)
 
             if config.arch.TATER.Pose.init_near_zero:
                 self.pose_transformer.apply(init_xavier)
@@ -263,7 +303,88 @@ class TATEREncoder(SmirkEncoder):
         z = torch.where(singular, z_sing, z)
         return torch.stack((x, y, z), dim=1)
 
-    def forward(self, img_batch, og_series_len, audio_batch=None):
+    def euler_to_rotation_matrix(self, euler_angles):
+        """
+        Convert Euler angles (B, N, 3) to rotation matrices (B, N, 3, 3).
+        Euler angles are assumed to be in ZYX order.
+        """
+        alpha, beta, gamma = euler_angles[..., 0], euler_angles[..., 1], euler_angles[..., 2]
+        
+        # Compute sine and cosine of angles
+        cos_a, sin_a = torch.cos(alpha), torch.sin(alpha)
+        cos_b, sin_b = torch.cos(beta), torch.sin(beta)
+        cos_g, sin_g = torch.cos(gamma), torch.sin(gamma)
+        
+        # Rotation matrices for each Euler angle set
+        R = torch.stack([
+            cos_g * cos_b, cos_g * sin_b * sin_a - sin_g * cos_a, cos_g * sin_b * cos_a + sin_g * sin_a,
+            sin_g * cos_b, sin_g * sin_b * sin_a + cos_g * cos_a, sin_g * sin_b * cos_a - cos_g * sin_a,
+            -sin_b,        cos_b * sin_a,                      cos_b * cos_a
+        ], dim=-1).reshape(*euler_angles.shape[:-1], 3, 3)
+        
+        return R
+
+    def convert_and_apply_residual(self, base_euler, residual, series_lengths):
+        """
+        Convert base Euler angles to rotation matrices, concatenate them, and apply the residual rotation matrices.
+
+        Args:
+        - base_euler: Tensor of shape (M, 6) containing two sets of Euler angles.
+        - residual: Tensor of shape (B, N, 18) containing two concatenated residual rotation matrices.
+        - series_lengths: List of lists where each inner list contains series lengths for each batch B_i.
+
+        Returns:
+        - combined: Tensor of shape (M, 18) representing the combined rotation matrices.
+        """
+        # Initialize the start index for base_euler slicing
+        start_idx = 0
+
+        # List to store the combined results
+        combined_results = []
+
+        for b_idx in range(residual.shape[0]):  # Iterate over each batch B_i
+            batch_residual = residual[b_idx]  # Shape: (N, 18)
+            s_len = series_lengths[b_idx]
+
+            # Extract the relevant slices
+            base_euler_slice = base_euler[start_idx : start_idx + s_len]  # Shape: (s_len, 6)
+            residual_slice = batch_residual[:s_len]  # Shape: (s_len, 18)
+
+            # Split base Euler angles into two sets
+            euler_angles_1 = base_euler_slice[..., :3]  # Shape: (s_len, 3)
+            euler_angles_2 = base_euler_slice[..., 3:]  # Shape: (s_len, 3)
+
+            # Convert Euler angles to rotation matrices
+            R1_base = self.euler_to_rotation_matrix(euler_angles_1)  # Shape: (s_len, 3, 3)
+            R2_base = self.euler_to_rotation_matrix(euler_angles_2)  # Shape: (s_len, 3, 3)
+
+            # Reshape residual to separate into two rotation matrices
+            residual_slice = residual_slice.reshape(-1, 2, 3, 3)  # Shape: (s_len, 2, 3, 3)
+            R1_residual = residual_slice[:, 0, :, :]  # Shape: (s_len, 3, 3)
+            R2_residual = residual_slice[:, 1, :, :]  # Shape: (s_len, 3, 3)
+
+            # Apply the residual rotations via LHS multiplication
+            R1_combined = torch.matmul(R1_residual, R1_base)  # Shape: (s_len, 3, 3)
+            R2_combined = torch.matmul(R2_residual, R2_base)  # Shape: (s_len, 3, 3)
+
+            # Reshape and concatenate the combined rotation matrices
+            R1_combined_flat = R1_combined.reshape(-1, 9)  # Shape: (s_len, 9)
+            R2_combined_flat = R2_combined.reshape(-1, 9)  # Shape: (s_len, 9)
+
+            combined_slice = torch.cat([R1_combined_flat, R2_combined_flat], dim=-1)  # Shape: (s_len, 18)
+
+            # Append the combined slice to the results
+            combined_results.append(combined_slice)
+
+            # Increment the start index
+            start_idx += s_len
+
+        # Concatenate all combined results into a single 2D tensor
+        combined = torch.cat(combined_results, dim=0)  # Shape: (M, 18)
+
+        return combined
+
+    def forward(self, img_batch, og_series_len, audio_batch=None, token_mask=None, video_mask=None, audio_mask=None, phoneme_batch=None):
         outputs = {}
         if isinstance(img_batch, list):
             img_cat = torch.cat(img_batch)
@@ -273,6 +394,7 @@ class TATEREncoder(SmirkEncoder):
         if self.use_base_exp:
             outputs.update(self.expression_encoder(img_cat))
         else:
+
             if self.use_latent_exp:
                 exp_encodings_all = self.expression_encoder.encoder(img_cat)
                 exp_encodings_all = F.adaptive_avg_pool2d(exp_encodings_all[-1], (1, 1)).squeeze(-1).squeeze(-1)
@@ -287,6 +409,16 @@ class TATEREncoder(SmirkEncoder):
             else:
                 base_encoding = self.expression_encoder.encoder(img_cat)
                 base_encoding = F.adaptive_avg_pool2d(base_encoding[-1], (1, 1)).squeeze(-1).squeeze(-1)
+            
+            if self.use_exp_linear_downsample:
+                exp_encodings_all = self.exp_layer_down(exp_encodings_all)
+
+            if video_mask is not None:
+                series_start = 0
+                for i in range(len(video_mask)):
+                    if not video_mask[i]:
+                        exp_encodings_all[series_start:series_start + og_series_len[i]] = 0.0
+                    series_start += og_series_len[i]
 
             exp_encodings_down, attention_mask, series_len = self.pad_and_create_mask(
                 exp_encodings_all,
@@ -296,7 +428,20 @@ class TATEREncoder(SmirkEncoder):
             )
 
             if self.exp_use_audio:
+                if audio_mask is not None:
+                    for i in range(len(audio_mask)):
+                        if not audio_mask[i]:
+                            audio_batch[i] = torch.zeros_like(audio_batch[i])
+
                 audio_batch = torch.cat(audio_batch)
+                # print("WII", audio_batch.shape)
+                if self.use_exp_linear_downsample:
+                    audio_batch = self.exp_layer_audio_down(audio_batch)
+                    
+                if phoneme_batch is not None:
+                    # print("WTF", img_cat.shape, audio_batch.shape, phoneme_batch.shape, series_len)
+                    audio_batch = torch.cat([audio_batch, phoneme_batch], dim=-1)
+
                 audio_encodings_down, _, series_len = self.pad_and_create_mask(
                     audio_batch,
                     og_series_len,
@@ -304,9 +449,9 @@ class TATEREncoder(SmirkEncoder):
                     sample_rate=self.downsample_rate
                 )
 
-                exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, attention_mask, series_len)
+                exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
             else:
-                exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len)
+                exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
 
             outputs['expression_residuals_down'] = exp_residual_out
 
@@ -314,6 +459,9 @@ class TATEREncoder(SmirkEncoder):
                 exp_residual_down = self.exp_layer(exp_residual_out)
             else:
                 exp_encodings_down = exp_residual_out
+
+            # if self.exp_use_audio:
+            #     exp_residual_down += self.residual_linear(exp_video_residual)
 
             updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
                 base_encoding,
@@ -355,6 +503,9 @@ class TATEREncoder(SmirkEncoder):
 
             base_shape_encoding = [x[:o].mean(dim=0)[None].expand(o, -1) for x, o in zip(base_shape_encoding, og_series_len)]
             base_shape_encoding = torch.cat(base_shape_encoding)
+
+            if self.use_shape_linear_downsample:
+                shape_encodings_all = self.shape_layer_down(shape_encodings_all)
         
             shape_encodings_down, attention_mask, series_len = self.pad_and_create_mask(
                 shape_encodings_all,
@@ -363,12 +514,17 @@ class TATEREncoder(SmirkEncoder):
                 sample_rate=self.downsample_rate
             )
 
-            shape_residual_down, shape_class = self.shape_transformer(shape_encodings_down, attention_mask, series_len)
+            shape_residual_down, shape_class = self.shape_transformer(shape_encodings_down, attention_mask, series_len, token_mask)
             shape_residual_down = [r[:s].mean(dim=0)[None].expand(o, -1) for r, s, o in zip(shape_residual_down, series_len, og_series_len)]
             shape_residual_down = torch.cat(shape_residual_down)
             shape_residual_flame = self.shape_layer(shape_residual_down).reshape(shape_residual_down.size(0), -1)
 
+            # print(base_shape_encoding.unique(), shape_residual_flame.unique())
+
             shape_parameters = base_shape_encoding + shape_residual_flame
+
+            # print(shape_parameters.unique())
+            # print("\n")
 
             outputs['shape_params'] = shape_parameters
             outputs['shape_residuals_down'] = shape_residual_down
@@ -393,6 +549,9 @@ class TATEREncoder(SmirkEncoder):
                 base_pose_encoding = self.pose_encoder.encoder(img_cat)
                 base_pose_encoding = F.adaptive_avg_pool2d(base_pose_encoding[-1], (1, 1)).squeeze(-1).squeeze(-1)
 
+            if self.use_pose_linear_downsample:
+                pose_encodings_all = self.pose_layer_down(pose_encodings_all)
+
             pose_encodings_down, attention_mask, series_len = self.pad_and_create_mask(
                 pose_encodings_all,
                 og_series_len,
@@ -400,7 +559,7 @@ class TATEREncoder(SmirkEncoder):
                 sample_rate=self.downsample_rate
             )
 
-            pose_residual_out, pose_class = self.pose_transformer(pose_encodings_down, attention_mask, series_len)
+            pose_residual_out, pose_class = self.pose_transformer(pose_encodings_down, attention_mask, series_len, token_mask)
             outputs['pose_residuals_down'] = pose_residual_out
 
             if self.apply_linear_before_res and self.use_pose_linear:
@@ -424,6 +583,10 @@ class TATEREncoder(SmirkEncoder):
                         euler_angles_set.append(euler_angles)
                     converted_residuals[b, n, :] = torch.cat(euler_angles_set)  # Store both sets of Euler angles
 
+            outputs["pose_params_mat"] = self.convert_and_apply_residual(base_pose_encoding, pose_residual_down, og_series_len)
+
+            # print(base_pose_encoding.unique(), converted_residuals.unique())
+
             updated_pose_encodings_all, pose_residuals_final = self.add_residual_to_encodings(
                 base_pose_encoding,
                 converted_residuals,
@@ -436,7 +599,7 @@ class TATEREncoder(SmirkEncoder):
             else:
                 pose_parameters = updated_pose_encodings_all
             pose_parameters = pose_parameters.reshape(pose_parameters.size(0), -1)
-            
+
             outputs['pose_params'] = pose_parameters[...,:3]
             outputs['pose_residuals_final'] = pose_residuals_final
             outputs['cam'] = pose_parameters[...,3:]

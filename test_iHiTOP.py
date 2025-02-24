@@ -100,7 +100,7 @@ def train(rank, world_size, config):
 
     # Load checkpoint if specified
     if config.resume:
-        trainer.load_model(config.resume, load_fuse_generator=config.load_fuse_generator, load_encoder=config.load_encoder, device=f"cuda:{rank}")
+        trainer.load_model(config.resume, load_fuse_generator=config.load_fuse_generator, load_encoder=config.load_encoder, device=f"cuda:{rank}", strict_load=True)
     trainer.create_base_encoder()
 
     # Synchronize before wrapping in DDP
@@ -108,15 +108,14 @@ def train(rank, world_size, config):
     trainer = torch.nn.parallel.DistributedDataParallel(trainer, device_ids=[rank])
 
     # Initialize data loaders
-    train_loader, val_loader, effective_seg_count = load_dataloaders_parallel(config, rank, world_size)
+    train_loader, val_loader, effective_seg_count = load_dataloaders_parallel(config, rank, world_size, False)
 
     # ---------------- Training loop ---------------- #
     for epoch in range(config.train.resume_epoch, config.train.num_epochs):
-        print(f"Rank {rank} HERE")
         train_loader.sampler.set_epoch(epoch)
         trainer.module.configure_optimizers(effective_seg_count, epoch != 0)
 
-        for phase in ['train']:
+        for phase in ['val']:
             loader = train_loader if phase == 'train' else val_loader
             for batch_idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f"Rank {rank} Progress", position=rank):                
                 try:
@@ -126,33 +125,31 @@ def train(rank, world_size, config):
                     dist.barrier()
                     trainer.module.set_freeze_status(config, batch_idx, epoch)
 
-                    for key in batch:
-                        if key not in ["audio_phonemes", "text_phonemes"] and torch.is_tensor(batch[key][0]):
-                            batch[key] = [x.to(rank) for x in batch[key]]
+                    with torch.no_grad():
+                        for key in batch:
+                            if key not in ["audio_phonemes", "text_phonemes"] and torch.is_tensor(batch[key][0]):
+                                batch[key] = [x.to(rank) for x in batch[key]]
 
-                    output = trainer.module.step(batch, batch_idx, epoch, phase=phase)
+                        output = trainer.module.step(batch, batch_idx, epoch, phase=phase)
 
-                    if rank == 0 and batch_idx % config.train.visualize_every == 0:
-                        all_vis = [trainer.module.create_visualizations(batch, output)]
-                        trainer.module.save_visualizations(
-                            all_vis,
-                            f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}",
-                            f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.mp4",
-                            frame_overlap=config.train.split_overlap,
-                            show_landmarks=True,
-                        )
+                        if rank == 0 and batch_idx % config.train.visualize_every == 0:
+                            all_vis = [trainer.module.create_visualizations(batch, output)]
+                            trainer.module.save_visualizations(
+                                all_vis,
+                                f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}",
+                                f"{config.train.log_path}/{phase}_images/{epoch}_{batch_idx}.mp4",
+                                frame_overlap=config.train.split_overlap,
+                                show_landmarks=True,
+                            )
 
-                        wandb.log({"epoch": epoch, "batch_idx": batch_idx})
+                            wandb.log({"epoch": epoch, "batch_idx": batch_idx})
 
                 except Exception as e:
                     if rank == 0:
                         print(f"Error loading batch_idx {batch_idx}!")
-                        error_message = traceback.format_exc()
-                        print(f"Error captured: {error_message}")
+                        # error_message = traceback.format_exc()
+                        # print(f"Error captured: {error_message}")
                         print(e)
-
-                if rank == 0 and (batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1):
-                    trainer.module.save_model(trainer.module.state_dict(), os.path.join(config.train.log_path, f'model_{epoch}_{batch_idx}.pt'))
 
     if rank == 0:
         wandb.finish()

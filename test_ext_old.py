@@ -3,59 +3,54 @@ from omegaconf import OmegaConf
 import torch
 from tqdm import tqdm
 import os
-import torchvision.transforms as T
+import torchvision.transforms as transforms
+import debug
 import traceback
 import time
 import warnings
 from src.tater_encoder import TATEREncoder
 from src.FLAME.FLAME import FLAME
 from src.renderer.renderer import Renderer
+from datasets.EXT_dataset import get_datasets_EXT
 from datasets.mixed_dataset_sampler import MixedDatasetBatchSampler
 import pickle
+from pytorch3d.loss import chamfer_distance
 import torchaudio
+import torchaudio.transforms as T
+from scipy.signal import resample
+from scipy.interpolate import interp1d
 import numpy as np
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 import math
 import torch.nn.functional as F
-import mediapipe as mp
 import cv2
 import ffmpeg
 import soundfile as sf
-import torchvision.utils as vutils
-import torchaudio.transforms as A
-import debug
-import torchaudio
-import torchaudio.transforms as A
-from scipy.signal import resample
-from scipy.interpolate import interp1d
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import math
-from datasets.VOCASET_dataset import get_datasets_VOCASET
-from pytorch3d.ops import iterative_closest_point
-from pytorch3d.structures import Pointclouds, Meshes
-from pytorch3d.loss.point_mesh_distance import point_mesh_face_distance
-import pandas as pd
-from pathlib import Path
 
 SEG_LEN = 60
 OVERLAP = 5
-FACE_CROP = True
-ICP_BATCH_SIZE = 8  # Adjust based on VRAM availability
-
 
 def parse_args():
     conf = OmegaConf.load(sys.argv[1])
+
     OmegaConf.set_struct(conf, True)
-    sys.argv = [sys.argv[0]] + sys.argv[2:]  # Remove config file from args
+
+    sys.argv = [sys.argv[0]] + sys.argv[2:]  # Remove the configuration file name from sys.argv
+
     conf.merge_with_cli()
     return conf
-
 
 def force_model_to_device(model, device):
     """
     Moves all parameters and buffers of the model to a specific device.
-    """
-    device = torch.device(device)
 
+    Args:
+        model (torch.nn.Module): The model to move.
+        device (str): The target device (e.g., 'cuda:0').
+    """
+    device = torch.device(device)  # Ensure it's a proper device object
+
+    # Move each parameter and buffer to the desired device
     for param in model.parameters():
         param.data = param.data.to(device)
         if param.grad is not None:
@@ -64,131 +59,34 @@ def force_model_to_device(model, device):
     for buffer in model.buffers():
         buffer.data = buffer.data.to(device)
 
-    model.to(device)
+    model.to(device)  # Ensure model is also set to the device
     print(f"✅ Model moved to {device}")
 
+def load_EXT_dataloaders(config):
+    # ----------------------- initialize datasets ----------------------- #
+    train_dataset_EXT, val_dataset_EXT, test_dataset_EXT = get_datasets_EXT(config)
+    dataset_percentages = {
+        'EXT': 1.0
+    }
+    
+    train_dataset = train_dataset_EXT
+    sampler = MixedDatasetBatchSampler([
+                                        len(train_dataset_EXT)
+                                        ], 
+                                       list(dataset_percentages.values()), 
+                                       config.train.batch_size, len(train_dataset_EXT))
+    def collate_fn(batch):
+        combined_batch = {}
+        for key in batch[0].keys():
+            combined_batch[key] = [b[key] for b in batch]
 
-def detect_face_and_crop(image_batch, detector, target_size=224, padding_value=0, scale_factor=1.7):
-    """
-    Detects faces using MediaPipe Face Detection and applies **tight, square cropping centered on the face**.
-    If the crop is **out of bounds**, it is **padded** to maintain a centered, square image.
-
-    **Scaling is performed by first centering the bounding box at the origin, scaling, and then shifting it back.**
-
-    Args:
-        image_batch (torch.Tensor): Batch of images **(B, 3, H, W)** or a single image **(3, H, W)** normalized to [0,1].
-        detector: MediaPipe FaceDetection model (must be instantiated **outside** the function).
-        target_size (int): Output size of the cropped face.
-        padding_value (float): Pixel fill value for out-of-bounds regions (default: `0` for black padding).
-        scale_factor (float): Multiplier for expanding/shrinking the detected face crop.
-
-    Returns:
-        cropped_images (torch.Tensor): Cropped faces resized to (B, 3, target_size, target_size) or (3, target_size, target_size) if input was a single image.
-        bboxes (list of tuples): [(x_min, y_min, x_max, y_max)] for each image (None if no face detected).
-        centers (list of tuples): [(x_center, y_center)] for each image (None if no face detected).
-    """
-    if image_batch.dim() == 3:  # Convert single image to batch (1, 3, H, W)
-        image_batch = image_batch.unsqueeze(0)
-
-    B, _, H, W = image_batch.shape
-    cropped_images, bboxes, centers, paddings = [], [], [], []
-
-    for i in range(B):
-        image_np = (image_batch[i].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)  # Convert to NumPy
-
-        results = detector.process(image_np)  # Call process directly
-
-        if results.detections:
-            # **Get first detected face bounding box**
-            bbox = results.detections[0].location_data.relative_bounding_box
-            cx, cy = bbox.xmin + bbox.width / 2, bbox.ymin + bbox.height / 2
-
-            x_min = bbox.xmin
-            x_max = bbox.xmin + bbox.width
-            y_min = bbox.ymin
-            y_max = bbox.ymin + bbox.height
-
-            # **Move bounding box center to (0,0) before scaling**
-            x_min -= cx
-            x_max -= cx
-            y_min -= cy
-            y_max -= cy
-
-            # **Scale while keeping center fixed**
-            x_min *= scale_factor
-            x_max *= scale_factor
-            y_min *= scale_factor
-            y_max *= scale_factor
-
-            # **Move back to original center**
-            x_min += cx
-            x_max += cx
-            y_min += cy
-            y_max += cy
-
-            x_min *= W
-            x_max *= W
-            y_min *= H
-            y_max *= H
-
-            # **Convert to absolute pixel values**
-            cx, cy = cx * W, cy * H
-
-            # **Ensure integer indices for cropping**
-            x_min, x_max = int(round(x_min)), int(round(x_max))
-            y_min, y_max = int(round(y_min)), int(round(y_max))
-
-            # **Step 1: Expand the bounding box to be square**
-            box_width = x_max - x_min
-            box_height = y_max - y_min
-            max_side = max(box_width, box_height)  # Make the bounding box square
-
-            # **Re-center the bounding box while making it square**
-            x_min = int(round(cx - max_side / 2))
-            x_max = int(round(cx + max_side / 2))
-            y_min = int(round(cy - max_side / 2))
-            y_max = int(round(cy + max_side / 2))
-
-            # **Step 2: Clamp the modified bounding box to image bounds**
-            x_min_clamped, x_max_clamped = max(0, x_min), min(W, x_max)
-            y_min_clamped, y_max_clamped = max(0, y_min), min(H, y_max)
-
-            # **Extract the portion inside the image bounds**
-            crop = image_batch[i][:, y_min_clamped:y_max_clamped, x_min_clamped:x_max_clamped]
-
-            # **Step 3: Compute padding needed for out-of-bounds areas**
-            pad_top = abs(y_min - y_min_clamped) if y_min < 0 else 0
-            pad_bottom = abs(y_max - y_max_clamped) if y_max > H else 0
-            pad_left = abs(x_min - x_min_clamped) if x_min < 0 else 0
-            pad_right = abs(x_max - x_max_clamped) if x_max > W else 0
-
-            # **Step 4: Apply padding where necessary**
-            crop_padded = F.pad(crop, (pad_left, pad_right, pad_top, pad_bottom), value=padding_value)
-            _, _, padded_W = crop_padded.shape
-            crop_padded = T.functional.resize(crop_padded, (target_size, target_size))
-
-            # **Step 5: Record scaled padding**
-            crop_scale = target_size / padded_W
-
-            # **Record results**
-            cropped_images.append(crop_padded.cpu())
-            bboxes.append((x_min_clamped, y_min_clamped, x_max_clamped, y_max_clamped))  # Bounding box before clamping
-            centers.append((int(cx), int(cy)))  # Face center
-            paddings.append((int(crop_scale * pad_top), int(crop_scale * pad_bottom), int(crop_scale * pad_left), int(crop_scale * pad_right)))
-        else:
-            # No face detected, return a blank image instead of an empty batch
-            blank_image = torch.full((3, target_size, target_size), padding_value, dtype=torch.float32)
-            cropped_images.append(blank_image)  # Keep batch shape consistent
-            bboxes.append(None)
-            centers.append(None)
-            paddings.append(None)
-
-    if not cropped_images:
-        raise ValueError("No valid images found in batch!")
-
-    cropped_images = torch.stack(cropped_images)  # Ensure all images have the same shape 
-
-    return cropped_images, bboxes, centers, paddings
+        return combined_batch
+    
+    val_dataset = torch.utils.data.ConcatDataset([val_dataset_EXT])
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.batch_size, collate_fn=collate_fn)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=config.train.batch_size,
+                                                num_workers=config.train.num_workers, shuffle=False, drop_last=True, collate_fn=collate_fn)
+    return train_loader, val_loader, test_dataset_EXT
 
 
 class AlignmentError(Exception):
@@ -229,7 +127,7 @@ def generate_phonemes(audio_segment, sample_rate, model, processor):
 
     except Exception as e:
         raise AlignmentError(f"Phoneme alignment failed: {e}")
-
+    
 def get_phoneme_embed(audio_data, phoneme_model, phoneme_processor, phoneme_map, total_frames, audio_length_seconds, audio_sample_rate, video_frame_rate, device):
     """
     Creates group timestamps given audio, video frames, dropped frames, and phoneme group mappings.
@@ -381,7 +279,7 @@ def get_audio_embed(audio_data, audio_model, extracted_embeddings, num_frames, d
     # Convert audio to tensor
     audio_tensor = torch.tensor(audio_data, dtype=torch.float32).unsqueeze(0)
     if sample_rate != 16000:
-        resampler = A.Resample(orig_freq=sample_rate, new_freq=16000)
+        resampler = T.Resample(orig_freq=sample_rate, new_freq=16000)
         audio_tensor = resampler(audio_tensor)
 
     audio_tensor = audio_tensor.to(device)
@@ -415,6 +313,107 @@ def get_audio_embed(audio_data, audio_model, extracted_embeddings, num_frames, d
             frame_level_embeddings[:, i] = interp_func(frame_times)
     
     return torch.tensor(frame_level_embeddings).to(device)
+
+def save_video_with_overlay(
+    all_imgs, all_renders, audio_tensor, sample_rate, output_path, fps=30, opacity=0.5, overlap=5
+):
+    """
+    Saves an MP4 where the rendered images are overlaid on the original images with adjustable opacity.
+    Also writes a stereo (N,2) audio tensor to the output video.
+
+    Args:
+        all_imgs (list of torch.Tensor): List of batches of original images (B, 3, N, M).
+        all_renders (list of torch.Tensor): List of batches of rendered images (B, 3, N, M).
+        audio_tensor (torch.Tensor): Stereo audio tensor (N, 2).
+        sample_rate (int): Sample rate of the audio.
+        output_path (str): Path to save the video file.
+        fps (int): Frames per second.
+        opacity (float): Opacity of the overlayed render (0 = no render, 1 = full render).
+        overlap (int): Number of frames to ignore at the start of each batch except the first.
+    """
+
+    def to_uint8(tensor):
+        """Converts PyTorch tensor from [0,1] or [-1,1] range to uint8 [0,255] for OpenCV."""
+        tensor = tensor.clone().detach()
+
+        if tensor.min() < 0:  # Convert [-1,1] range to [0,1]
+            tensor = (tensor + 1) / 2  
+
+        tensor = torch.clamp(tensor, 0, 1)
+        tensor = (tensor * 255).byte()
+
+        return tensor.permute(1, 2, 0).cpu().numpy()
+
+    frames = []
+    for batch_idx, (img_batch, render_batch) in enumerate(zip(all_imgs, all_renders)):
+        batch_size = img_batch.shape[0]
+
+        for b in range(batch_size):
+            if batch_idx > 0 and b < overlap:
+                continue
+
+            img_np = to_uint8(img_batch[b])
+            render_np = to_uint8(render_batch[b])
+
+            if img_np.shape != render_np.shape:
+                render_np = cv2.resize(render_np, (img_np.shape[1], img_np.shape[0]))
+
+            overlayed = cv2.addWeighted(img_np, 1 - opacity, render_np, opacity, 0)
+
+            frames.append(cv2.cvtColor(overlayed, cv2.COLOR_RGB2BGR))
+
+    if len(frames) == 0:
+        print("Error: No valid frames to write.")
+        return
+
+    # Define video writer
+    height, width, _ = frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_file = output_path.replace(".mp4", "_video.mp4")
+    video_writer = cv2.VideoWriter(video_file, fourcc, fps, (width, height))
+
+    for frame in frames:
+        video_writer.write(frame)
+
+    video_writer.release()
+    print(f"Video saved at {video_file}")
+
+    # --- Process Audio ---
+    audio_file = output_path.replace(".mp4", ".wav")
+
+    # Convert PyTorch tensor to NumPy
+    audio_np = audio_tensor
+
+    # Convert int16 to float32 if necessary
+    if np.issubdtype(audio_np.dtype, np.integer):
+        audio_np = audio_np.astype(np.float32) / np.iinfo(np.int16).max
+
+    # Ensure audio is within [-1,1]
+    audio_np = np.clip(audio_np, -1.0, 1.0)
+
+    # Save audio as WAV
+    sf.write(audio_file, audio_np, int(sample_rate))
+    print(f"Audio saved at {audio_file}")
+
+    # --- Corrected FFmpeg Call to Merge Video & Audio ---
+    final_output = output_path
+
+    ffmpeg_cmd = (
+        ffmpeg
+        .concat(
+            ffmpeg.input(video_file).video,  # Ensure video stream
+            ffmpeg.input(audio_file).audio,  # Ensure audio stream
+            v=1, a=1  # Keep one video, one audio stream
+        )
+        .output(final_output, vcodec="libx264", acodec="aac", audio_bitrate="192k")
+        .run(overwrite_output=True, quiet=True)
+    )
+
+    print(f"Final video with audio saved at {final_output}")
+
+    # Cleanup temp files
+    os.remove(video_file)
+    os.remove(audio_file)
 
 def create_phoneme_map(phoneme_processor):
         # Viseme groups based on articulation and mouth shape
@@ -454,87 +453,27 @@ def create_phoneme_map(phoneme_processor):
 
         return id_to_group
 
-def load_dataloaders(config):
-    # ----------------------- initialize datasets ----------------------- #
-    train_dataset_VOCASET, val_dataset_VOCASET, test_dataset_VOCASET = get_datasets_VOCASET(config)
-    dataset_percentages = {
-        'VOCASET': 1.0
-    }
-    
-    train_dataset = train_dataset_VOCASET
-    sampler = MixedDatasetBatchSampler([
-                                        len(train_dataset_VOCASET)
-                                        ], 
-                                       list(dataset_percentages.values()), 
-                                       config.train.batch_size, len(train_dataset_VOCASET))
-    def collate_fn(batch):
-        combined_batch = {}
-        for key in batch[0].keys():
-            combined_batch[key] = [b[key] for b in batch]
-
-        return combined_batch
-    
-    val_dataset = val_dataset_VOCASET
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_sampler=sampler, num_workers=config.train.batch_size, collate_fn=collate_fn)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=config.train.batch_size,
-                                                num_workers=config.train.num_workers, shuffle=False, drop_last=True, collate_fn=collate_fn)
-    return train_loader, val_loader, test_dataset_VOCASET
-
-
-def rigid_alignment_icp(source_mesh, target_mesh, max_iterations=30):
-    """
-    Perform rigid alignment using differentiable ICP in PyTorch3D.
-
-    Args:
-        source_mesh (Meshes): Source mesh (PyTorch3D Meshes object).
-        target_mesh (Meshes): Target mesh (PyTorch3D Meshes object).
-        max_iterations (int): Maximum ICP iterations.
-
-    Returns:
-        aligned_verts (torch.Tensor): Aligned source mesh vertices.
-        R (torch.Tensor): Rotation matrix (3x3).
-        T (torch.Tensor): Translation vector (3x1).
-    """
-    # Convert meshes to point clouds (ICP works on point clouds)
-    source_pcd = Pointclouds([source_mesh.verts_packed()])  # (N, 3)
-    target_pcd = Pointclouds([target_mesh.verts_packed()])  # (M, 3), M ≠ N
-
-    # Run differentiable ICP
-    R, T, _ = iterative_closest_point(
-        source_pcd, target_pcd, max_iterations=max_iterations
-    )
-
-    # Apply transformation to align source mesh
-    aligned_verts = torch.bmm(R, source_pcd.points_padded().transpose(1, 2)).transpose(1, 2) + T
-
-    return aligned_verts[0], R[0], T[0]  # Extract first batch
-
 if __name__ == '__main__':
+    # ----------------------- initialize configuration ----------------------- #
     config = parse_args()
 
-    os.makedirs(config.train.log_path, exist_ok=True)
-    vocaset_save_path = os.path.join(config.train.log_path, 'vocaset')
-    os.makedirs(vocaset_save_path, exist_ok=True)
-
-    _, val_loader, _ = get_datasets_VOCASET(config)
+    warnings.filterwarnings("ignore", message="GaussNoise could work incorrectly in ReplayMode for other input data")
+    _, val_loader,  _ = load_EXT_dataloaders(config)
 
     def strip_exact_prefix(state_dict, prefix):
             return {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
-
-    # Initialize models
+    
     tater = TATEREncoder(config, n_exp=config.arch.num_expression, n_shape=config.arch.num_shape)
     loaded_state_dict = torch.load(config.resume, map_location=config.device)
     filtered_state_dict = {k: v for k, v in loaded_state_dict.items() if k.startswith('tater')}
     filtered_state_dict = strip_exact_prefix(filtered_state_dict, "tater.")
-    tater.load_state_dict(filtered_state_dict, strict=False)
+    tater.load_state_dict(filtered_state_dict)
     tater.device = config.device
     force_model_to_device(tater, tater.device)
     tater.eval()
 
     flame = FLAME(n_exp=config.arch.num_expression, n_shape=config.arch.num_shape)
     flame = flame.to(config.device)
-    force_model_to_device(flame, config.device)
-    flame.eval()
 
     # Load in Wav2Vec audio model
     # Initialize Wav2Vec 2.0 model from torchaudio
@@ -561,23 +500,15 @@ if __name__ == '__main__':
 
     phoneme_map = create_phoneme_map(phoneme_processor)
 
-    renderer = Renderer(render_full_head=True)
-    force_model_to_device(renderer, config.device)
+    # Renderer
+    renderer = Renderer(render_full_head=False)
+    force_model_to_device(renderer, device)
     renderer.eval()
 
-    # Face Detection
-    if FACE_CROP:
-        face_detector = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
-
-    # Main df capturing all sampled items
-    columns = ["file", "problematic", "S2M_Dist"]
-    main_results_df = pd.DataFrame(columns=columns)
-
-    # Process validation set
+    # Assuming batchsize of 1
     for segment_idx, batch in tqdm(enumerate(val_loader), total=len(val_loader)):
-        if segment_idx >= len(val_loader):
-            break
-        if len(batch["img"]) == 0:
+        if len(batch["img"][0]) == 0:
+            print("Empty. Continue...")
             continue
 
         subbatch_start = 0
@@ -585,19 +516,18 @@ if __name__ == '__main__':
         fps = batch["fps"][0].item()
         sample_rate = batch["audio_sample_rate"][0].item()
 
-        batch["audio"] = batch["audio"][:, None].repeat(1, 2)
+        all_imgs = []
+        all_renders = []
 
-        all_scan_to_mesh = []
-        fine_results_df = pd.DataFrame(columns=["S2M_Dist"])
-        with tqdm(total=len(batch["img"]), desc="Processing Batches", unit="batch", dynamic_ncols=True) as pbar:
-            imgs = batch["img"][subbatch_start:subbatch_start + SEG_LEN].to(config.device)
+        while subbatch_start <= len(batch["img"][0]):
+            imgs = batch["img"][0][subbatch_start:subbatch_start + SEG_LEN].to(device)
 
             frames_sampled = len(imgs)
             duration_in_sec = round(frames_sampled / fps, 4)
             audio_sampled = int(sample_rate * duration_in_sec)
 
             audio_embed = get_audio_embed(
-                batch["audio"][audio_start: audio_start + audio_sampled].float().mean(dim=-1).int().numpy(),
+                batch["audio"][0][audio_start: audio_start + audio_sampled].float().mean(dim=-1).int().numpy(),
                 audio_model,
                 extracted_embeddings,
                 frames_sampled,
@@ -607,7 +537,7 @@ if __name__ == '__main__':
             )
 
             phoneme_embed = get_phoneme_embed(
-                batch["audio"][audio_start: audio_start + audio_sampled].float().mean(dim=-1).int(),
+                batch["audio"][0][audio_start: audio_start + audio_sampled].float().mean(dim=-1).int(),
                 phoneme_model,
                 phoneme_processor,
                 phoneme_map,
@@ -618,76 +548,34 @@ if __name__ == '__main__':
                 tater.device
             )
 
-            if FACE_CROP:
-                cropped_imgs, bboxes, _, paddings = detect_face_and_crop(imgs, face_detector)
-                cropped_imgs = cropped_imgs.to(config.device) 
-            else:
-                cropped_imgs = imgs
-                bboxes = [None] * len(imgs)
-                paddings = [None] * len(imgs)
-
             with torch.no_grad():
                 series_len = [frames_sampled]
-                all_params = tater([cropped_imgs], series_len, audio_batch=[audio_embed], phoneme_batch=phoneme_embed)
+                all_params = tater([imgs], series_len, audio_batch=[audio_embed], phoneme_batch=phoneme_embed)
+
                 flame_output = flame.forward(all_params)
+                renderer_output = renderer.forward(flame_output['vertices'], all_params['cam'],
+                                                        landmarks_fan=flame_output['landmarks_fan'], landmarks_mp=flame_output['landmarks_mp'])
+                rendered_img = renderer_output['rendered_img']
+                flame_output.update(renderer_output)
 
-                # **Predictions are Point Clouds**
-                overlap_removed = 0 if subbatch_start == 0 else OVERLAP
-                meshes = flame_output["vertices"][overlap_removed:]  # (B, N, 3)
+            all_imgs.append(imgs.cpu())
+            all_renders.append(rendered_img.cpu())
 
-                # **Normalize Predictions**
-                meshes -= meshes.mean(dim=1, keepdim=True)  # Center
-                scale = meshes.norm(dim=2, keepdim=True).amax(dim=1, keepdim=True)[0]
-                meshes /= scale
+            subbatch_start += SEG_LEN - OVERLAP
+            audio_start += int(sample_rate * (SEG_LEN - OVERLAP) / fps)
+        
+        save_video_with_overlay(
+            all_imgs,
+            all_renders,
+            batch["audio"][0].numpy(),
+            sample_rate,
+            f"{segment_idx}.mp4",
+            fps,
+            0.5,
+            OVERLAP
+        )
 
-                # **Convert GT Meshes from batch (Keep them on CPU initially)**
-                gt_meshes = batch["meshes"][subbatch_start:subbatch_start + SEG_LEN]  # Full GT meshes
-                gt_meshes = gt_meshes[overlap_removed:]  # Remove overlapping frames
+            
 
-                # **Store results**
-                scan_to_mesh_dists = []
+                
 
-                # **Process ICP in Smaller Batches**
-                for i in range(0, len(meshes), ICP_BATCH_SIZE):
-                    batch_meshes = meshes[i:i + ICP_BATCH_SIZE].to(config.device)  # Move batch to GPU
-                    batch_gt_meshes = [gt_meshes[j].to(config.device) for j in range(i, min(i + ICP_BATCH_SIZE, len(gt_meshes)))]  # Move GT batch
-
-                    # Convert Predictions & GT to Pointclouds WITHOUT PADDING
-                    source_pcd = Pointclouds(points=[batch_meshes[j] for j in range(len(batch_meshes))])
-                    target_pcd = Pointclouds(points=[batch_gt.verts_packed() for batch_gt in batch_gt_meshes])
-
-                    # Run ICP for Alignment (No Masking)
-                    _, _, aligned_meshes, _, _ = iterative_closest_point(
-                        source_pcd, target_pcd, max_iterations=500
-                    )
-
-                    # Compute Scan-to-Mesh Distance in the current batch
-                    batch_dists = [
-                        point_mesh_face_distance(batch_gt_meshes[j], aligned_meshes[j]).detach().cpu().numpy()
-                        for j in range(len(aligned_meshes))
-                    ]
-
-                    scan_to_mesh_dists.extend(batch_dists)  # Store results
-
-                    # Free up memory
-                    del batch_meshes, batch_gt_meshes, aligned_meshes, source_pcd, target_pcd
-                    torch.cuda.empty_cache()
-
-                # **Append Results to DataFrame**
-                new_data_df = pd.DataFrame({"S2M_Dist": scan_to_mesh_dists})
-                fine_results_df = pd.concat([fine_results_df, new_data_df], ignore_index=True)
-
-                # **Progress Updates**
-                pbar.update(SEG_LEN - OVERLAP)
-                subbatch_start += SEG_LEN - OVERLAP
-                audio_start += int(sample_rate * (SEG_LEN - OVERLAP) / fps)
-
-        avg_dist = fine_results_df["S2M_Dist"].mean()
-        dir_path = Path(batch["data_dir"])
-        base_dir = dir_path.stem
-        parent_dir = dir_path.parent.name
-        print(f"Chamfer Distance for {dir_path} (Batch-wise, Aligned): {avg_dist}")
-
-        main_results_df = pd.concat([main_results_df, pd.DataFrame([[f"{parent_dir}_{base_dir}", batch["problematic"], avg_dist]], columns=columns)], ignore_index=True)
-        fine_results_df.to_csv(f"{vocaset_save_path}/{parent_dir}_{base_dir}.csv")
-        main_results_df.to_csv(f"{vocaset_save_path}/main_results.csv")
