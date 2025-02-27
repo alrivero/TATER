@@ -29,6 +29,16 @@ from external.Visual_Speech_Recognition_for_Multiple_Languages.lipreading.model 
 from external.Visual_Speech_Recognition_for_Multiple_Languages.dataloader.transform import Compose, Normalize, CenterCrop, SpeedRate, Identity
 from configparser import ConfigParser
 
+import sys
+sys.path.append("/local/PTSD_STOP/TATER/external/stylegan_v")
+sys.path.append("/local/PTSD_STOP/TATER/external/stylegan_v/src_v")
+
+from omegaconf import OmegaConf, DictConfig
+from external.stylegan_v.src_v.training.networks import Discriminator
+from external.stylegan_v.src_v.torch_utils.misc import copy_params_and_buffers
+from external.stylegan_v.src_v.legacy import load_network_pkl
+from external.stylegan_v.src_v.dnnlib.util import open_url
+
 class TATERTrainerParallel(SmirkTrainer):
     def __init__(self, config):
         super().__init__(config)
@@ -130,6 +140,24 @@ class TATERTrainerParallel(SmirkTrainer):
         self.use_phoneme_onehot = self.config.train.phoneme_onehot
 
         self.use_series_pixel_sampling = self.config.train.series_pixel_sampling
+
+        D_cfg = OmegaConf.load("/local/PTSD_STOP/TATER/configs/stylegan_D.yaml")
+        OmegaConf.set_struct(D_cfg, True)
+        self.discriminator = Discriminator(
+            c_dim=0,
+            img_resolution=256,
+            img_channels=3,
+            channel_base=16384,
+            cfg=D_cfg.discriminator
+        ).requires_grad_(False).to(self.device)
+
+        with open_url(D_cfg.load_path) as f:
+            resume_data = load_network_pkl(f)
+            copy_params_and_buffers(resume_data['D'], self.discriminator, require_all=False)
+
+        self.discriminator.requires_grad_(True)
+
+        import pdb; pdb.set_trace()
 
     def logging(self, batch_idx, losses, phase):
         """
@@ -234,6 +262,7 @@ class TATERTrainerParallel(SmirkTrainer):
                 lr=gen_max_lr, 
                 betas=(0.5, 0.999)
             )
+        
 
         if self.config.train.use_one_cycle_lr and not use_default_annealing:
             self.smirk_generator_scheduler = CustomWarmupCosineScheduler(
@@ -248,6 +277,15 @@ class TATERTrainerParallel(SmirkTrainer):
                 self.smirk_generator_optimizer, T_max=effective_total_steps, eta_min=gen_max_lr
             )
 
+        if self.config.train.optimize_discriminator:
+            self.tater_discriminator_optimizer = torch.optim.Adam(
+                self.discriminator.parameters(), 
+                lr=gen_max_lr, 
+                betas=(0.5, 0.999)
+            )
+            self.tater_discriminator_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.tater_discriminator_optimizer, T_max=effective_total_steps, eta_min=gen_max_lr
+            )
 
     # def configure_optimizers(self, train_loader):
     #     n_steps = train_loader  # Number of steps per epoch
@@ -1640,6 +1678,24 @@ class TATERTrainerParallel(SmirkTrainer):
         if self.config.train.optimize_base_pose:
             utils.freeze_module(self.smirk_encoder.pose_encoder, 'pose encoder')
 
+    def set_freeze_status(self, config, batch_idx, epoch_idx):
+        self.config.train.freeze_encoder_in_first_path = False
+        self.config.train.freeze_generator_in_first_path = False
+        self.config.train.freeze_discriminator_in_first_path = False
+
+        self.config.train.freeze_encoder_in_second_path = False
+        self.config.train.freeze_generator_in_second_path = False
+
+        #decision_idx = batch_idx if config.train.freeze_schedule.per_iteration else epoch_idx
+        decision_idx = batch_idx #epoch_idx 
+
+        self.config.train.freeze_generator_in_first_path = decision_idx % 3 == 0
+        self.config.train.freeze_encoder_in_first_path = decision_idx % 3 == 1
+        self.config.train.freeze_discriminator_in_first_path = decision_idx % 3 == 2
+
+        self.config.train.freeze_encoder_in_second_path = decision_idx % 2 == 0
+        self.config.train.freeze_generator_in_second_path = decision_idx % 2 == 1
+
     def step(self, batch, batch_idx, epoch, phase='train'):
         if phase == 'train':
             self.train()
@@ -1651,6 +1707,15 @@ class TATERTrainerParallel(SmirkTrainer):
         self.set_base_freeze()
         series_len = [b.shape[0] for b in batch["img"]]
 
+        if phase == "train":
+            # Freeze depending on whether we're training the generator or disciminator
+            if self.config.train.freeze_encoder_in_first_path:
+                utils.freeze_module(self.tater, 'tater')
+            if self.config.train.freeze_generator_in_first_path:
+                utils.freeze_module(self.smirk_generator, 'fuse generator')
+            if self.config.train.freeze_discriminator_in_first_path:
+                utils.freeze_module(self.discriminator, 'discriminator')
+            
         # print("onqoidwijdio")
 
         # Apply token masking
@@ -1802,6 +1867,12 @@ class TATERTrainerParallel(SmirkTrainer):
             iteration = batch_idx if epoch == 0 else -1
             self.tater.update_residual_scale(iteration)
 
+            if self.config.train.freeze_encoder_in_first_path:
+                utils.unfreeze_module(self.tater, 'tater')
+            if self.config.train.freeze_generator_in_first_path:
+                utils.unfreeze_module(self.smirk_generator, 'fuse generator')
+            if self.config.train.freeze_discriminator_in_first_path:
+                utils.unfreeze_module(self.discriminator, 'discriminator')
             
         if (self.config.train.loss_weights['cycle_loss'] > 0) and (phase == 'train'):
             if self.config.train.freeze_encoder_in_second_path:
