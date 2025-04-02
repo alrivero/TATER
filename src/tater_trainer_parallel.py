@@ -38,6 +38,7 @@ from external.stylegan_v.src_v.training.networks import Discriminator
 from external.stylegan_v.src_v.torch_utils.misc import copy_params_and_buffers
 from external.stylegan_v.src_v.legacy import load_network_pkl
 from external.stylegan_v.src_v.dnnlib.util import open_url
+from external.stylegan_v.src_v.torch_utils.ops import conv2d_gradfix
 
 class TATERTrainerParallel(SmirkTrainer):
     def __init__(self, config):
@@ -141,23 +142,18 @@ class TATERTrainerParallel(SmirkTrainer):
 
         self.use_series_pixel_sampling = self.config.train.series_pixel_sampling
 
-        D_cfg = OmegaConf.load("/local/PTSD_STOP/TATER/configs/stylegan_D.yaml")
-        OmegaConf.set_struct(D_cfg, True)
+        self.D_cfg = OmegaConf.load("/local/PTSD_STOP/TATER/configs/stylegan_D.yaml")
+        OmegaConf.set_struct(self.D_cfg, True)
         self.discriminator = Discriminator(
             c_dim=0,
             img_resolution=256,
             img_channels=3,
             channel_base=16384,
-            cfg=D_cfg.discriminator
-        ).requires_grad_(False).to(self.device)
+            cfg=self.D_cfg.discriminator
+        ).to(self.device)
+        self.r1_gamma = 0.2
 
-        with open_url(D_cfg.load_path) as f:
-            resume_data = load_network_pkl(f)
-            copy_params_and_buffers(resume_data['D'], self.discriminator, require_all=False)
-
-        self.discriminator.requires_grad_(True)
-
-        import pdb; pdb.set_trace()
+        self.last_D_value = 0.0
 
     def logging(self, batch_idx, losses, phase):
         """
@@ -188,6 +184,7 @@ class TATERTrainerParallel(SmirkTrainer):
             if 'wandb' in globals() and wandb.run is not None:
                 wandb_log_data = {f"{phase}/{k}": v for k, v in losses.items()}
                 wandb_log_data[f"{phase}/encoder_lr"] = self.encoder_scheduler.get_last_lr()[0]
+                wandb_log_data[f"{phase}/gan_D_recon_loss"] = self.last_D_value
                 if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
                     wandb_log_data[f"{phase}/generator_lr"] = self.smirk_generator_scheduler.get_last_lr()[0]
                 wandb_log_data[f"{phase}/batch_idx"] = batch_idx
@@ -357,6 +354,7 @@ class TATERTrainerParallel(SmirkTrainer):
         self.encoder_scheduler.step()
         if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
             self.smirk_generator_scheduler.step()
+        self.tater_discriminator_scheduler.step()
 
     def train(self):
         self.smirk_encoder.train()
@@ -372,12 +370,14 @@ class TATERTrainerParallel(SmirkTrainer):
         self.encoder_optimizer.zero_grad()
         if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
             self.smirk_generator_optimizer.zero_grad()
+        self.tater_discriminator_optimizer.zero_grad()
 
     def optimizers_step(self, step_encoder=True, step_fuse_generator=True):
         if step_encoder:
             self.encoder_optimizer.step()
         if step_fuse_generator and self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
             self.smirk_generator_optimizer.step()
+        self.tater_discriminator_optimizer.step()
 
     def create_base_encoder(self):
         self.base_exp_encoder = copy.deepcopy(self.tater.expression_encoder)
@@ -748,6 +748,48 @@ class TATERTrainerParallel(SmirkTrainer):
 
         return masked_img
 
+    
+    def sample_discriminator_frames(self, img, series_len, k=3, max_dist=32):
+        device = img.device
+        imgs_sampled, idxs_sampled = [], []
+        start_idx = 0
+
+        for length in series_len:
+            if length < k:
+                raise ValueError(f"Subsequence length {length} < k={k}.")
+
+            max_gap = min(max_dist, length - (k - 1))
+            if max_gap < (k - 1):
+                raise ValueError(f"No valid gap: length={length}, k={k}, max_dist={max_dist}.")
+
+            # Pick first frame t1
+            t1 = torch.randint(0, length - k + 1, (1,), device=device).item()
+
+            # Gap range for tk (ensures tk <= length-1)
+            gap_min, gap_max = (k - 1), min(max_gap, (length - 1) - t1)
+            if gap_min > gap_max:
+                raise ValueError(f"No valid gap range with t1={t1} in [0, {length - k}]")
+
+            g = torch.randint(gap_min, gap_max + 1, (1,), device=device).item()
+            tk = t1 + g
+
+            # Middle frames
+            middle_count = g - 1
+            if middle_count < (k - 2):
+                raise ValueError(f"Can't pick {k-2} middle frames from gap {middle_count}.")
+
+            mid = torch.randperm(middle_count, device=device)[: k - 2] + (t1 + 1)
+            idx = torch.cat([torch.tensor([t1, tk], device=device), mid]).sort().values + start_idx
+
+            imgs_sampled.append(img.index_select(0, idx))
+            idxs_sampled.append(idx)
+            start_idx += length
+
+        imgs_sampled = torch.cat(imgs_sampled, dim=0)
+        imgs_sampled = F.interpolate(imgs_sampled, size=(256, 256), mode='bilinear', align_corners=False)
+        idxs_sampled = torch.stack(idxs_sampled, dim=0).to(device)
+        return imgs_sampled, idxs_sampled
+
     def step1(self, batch, encoder_output, batch_idx, series_len):
         B, C, H, W = batch['img'].shape
         flame_output = self.flame.forward(encoder_output)
@@ -1110,6 +1152,65 @@ class TATERTrainerParallel(SmirkTrainer):
                 losses["phoneme_loss"] = phoneme_loss
                 phoneme_loss = self.config.train.loss_weights['phoneme_loss'] * phoneme_loss
 
+        # Discriminator/Generator GAN Losses
+        gan_loss = 0
+        if self.config.train.loss_weights['gan_loss'] > 0.0:
+            sampled_recon, sampled_idxs_recon = self.sample_discriminator_frames(reconstructed_img, series_len)
+            sampled_gt, sampled_idxs_gt = self.sample_discriminator_frames(img, series_len)
+            dummy_c = torch.zeros(len(series_len), 0).to(self.device)
+
+            G_pass = self.config.train.freeze_discriminator_in_first_path
+            D_pass = self.config.train.freeze_encoder_in_first_path and self.config.train.freeze_generator_in_first_path
+            D_R1 = batch_idx % 150 == 0
+
+            loss_sign = -1 if G_pass else 1
+            D_out_recon = self.discriminator(sampled_recon, dummy_c, sampled_idxs_recon)
+            gan_loss = F.softplus(loss_sign * D_out_recon['image_logits']).mean()
+            if 'video_logits' in D_out_recon:
+                gan_loss += F.softplus(loss_sign * D_out_recon['video_logits']).mean()
+            
+            if G_pass:
+                losses["gan_G_recon_loss"] = gan_loss
+            else:
+                losses["gan_D_recon_loss"] = gan_loss
+                self.last_D_value = gan_loss.item()
+
+            if D_pass:
+                real_img_tmp = sampled_gt.detach().requires_grad_(D_R1)
+                D_out_gt = self.discriminator(real_img_tmp, dummy_c, sampled_idxs_gt)
+
+                if D_R1:
+                    with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
+                        r1_grads = torch.autograd.grad(
+                            outputs=[D_out_gt['image_logits'].sum()],
+                            inputs=[real_img_tmp],
+                            create_graph=True,
+                            only_inputs=True
+                        )[0]
+
+                    r1_penalty = r1_grads.square().sum(dim=[1, 2, 3])  
+                    r1_gan_loss = r1_penalty * (self.r1_gamma / 2)  # shape [B * F]
+
+                    B = D_out_gt['image_logits'].shape[0]  # Discriminator output batch
+                    N = real_img_tmp.shape[0]             # total images = B * F
+                    frames = N // B                       # how many frames per sample?
+
+                    r1_gan_loss = r1_gan_loss.view(B, frames).mean(dim=1)  # shape [B]
+                    r1_gan_loss = r1_gan_loss.mean()                       # shape []
+
+                    gan_loss += r1_gan_loss
+                    losses["gan_R1_loss"] = r1_gan_loss
+                else:
+                    gt_gan_loss = F.softplus(-D_out_gt['image_logits']).mean()
+                    if 'video_logits' in D_out_gt:
+                        gt_gan_loss += F.softplus(-D_out_gt['video_logits']).mean()
+                    gan_loss += gt_gan_loss
+                    
+                    losses["gan_gt_loss"] = gt_gan_loss
+
+            # print("GAN", D_pass, G_pass, D_R1, gan_loss)
+            gan_loss *= self.config.train.loss_weights['gan_loss'] 
+
         loss_first_path = (
             (shape_losses if self.config.train.optimize_base_shape or not self.config.arch.TATER.Shape.use_base_encoder else 0) +
             (expression_losses if self.config.train.optimize_base_expression or not self.config.arch.TATER.Expression.use_base_encoder else 0) +
@@ -1122,12 +1223,13 @@ class TATERTrainerParallel(SmirkTrainer):
             (sym_lipreading_loss) +
             (pose_smoothness_loss) + 
             (velocity_loss) + 
-            (recon_velocity_loss)
+            (recon_velocity_loss) +
+            (gan_loss)
         )
 
         for key, value in losses.items():
             losses[key] = value.item() if isinstance(value, torch.Tensor) else value
-
+        
         outputs = {}
         outputs['rendered_img'] = rendered_img
         outputs['vertices'] = flame_output['vertices']
@@ -1686,12 +1788,11 @@ class TATERTrainerParallel(SmirkTrainer):
         self.config.train.freeze_encoder_in_second_path = False
         self.config.train.freeze_generator_in_second_path = False
 
-        #decision_idx = batch_idx if config.train.freeze_schedule.per_iteration else epoch_idx
-        decision_idx = batch_idx #epoch_idx 
+        decision_idx = batch_idx
 
-        self.config.train.freeze_generator_in_first_path = decision_idx % 3 == 0
-        self.config.train.freeze_encoder_in_first_path = decision_idx % 3 == 1
-        self.config.train.freeze_discriminator_in_first_path = decision_idx % 3 == 2
+        self.config.train.freeze_discriminator_in_first_path = decision_idx % 5 < 4
+        self.config.train.freeze_generator_in_first_path = decision_idx % 5 == 4
+        self.config.train.freeze_encoder_in_first_path = decision_idx % 5 == 4
 
         self.config.train.freeze_encoder_in_second_path = decision_idx % 2 == 0
         self.config.train.freeze_generator_in_second_path = decision_idx % 2 == 1
@@ -1908,6 +2009,7 @@ class TATERTrainerParallel(SmirkTrainer):
                 utils.unfreeze_module(self.smirk_generator, 'fuse generator')
 
         losses = losses1
+
         self.logging(batch_idx, losses, phase)
 
         return outputs1
@@ -2151,6 +2253,12 @@ class TATERTrainerParallel(SmirkTrainer):
             self.tater.pose_encoder.load_state_dict(pose_encoder_state, strict=False)
             self.tater.pose_transformer.load_state_dict(pose_transformer_state, strict=False)
             self.tater.pose_layer.load_state_dict(pose_layer_state, strict=False)
+
+        self.discriminator.requires_grad_(False).to(self.device)
+        with open_url(self.D_cfg.load_path) as f:
+            resume_data = load_network_pkl(f)
+            copy_params_and_buffers(resume_data['D'], self.discriminator, require_all=False)
+        self.discriminator.requires_grad_(True)
 
     def save_model(self, state_dict, save_path):
         new_state_dict = {}

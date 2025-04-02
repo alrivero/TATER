@@ -58,20 +58,20 @@ class TATEREncoder(SmirkEncoder):
 
             if self.exp_use_audio:
                 self.exp_transformer = CrossAttentionTransformer(config.arch.TATER.Expression.CrossAttentionTransformer)
-                self.residual_linear = nn.Linear(self.exp_emb_size+ 44, n_exp + 2 + 3)
+                self.residual_linear = nn.Linear(self.exp_emb_size, n_exp + 2 + 3)
             else:
                 self.exp_transformer = TemporalTransformer(config.arch.TATER.Expression.Transformer)
 
             if self.use_exp_linear:
                 exp_offset = 0 # 1 if self.apply_linear_before_res else 0
                 if self.exp_use_audio:
-                    self.exp_layer = nn.Linear(2 * (self.exp_emb_size+ 44), n_exp + 2 + 3 + exp_offset)
+                    self.exp_layer = nn.Linear(2 * (self.exp_emb_size), n_exp + 2 + 3 + exp_offset)
                 else:
                     self.exp_layer = nn.Linear(self.exp_emb_size, n_exp + 2 + 3 + exp_offset)
 
             if self.use_exp_linear_downsample:
                 if self.exp_use_audio:
-                    self.exp_layer_down = nn.Linear(D_EXP_DEFAULT, self.exp_emb_size+ 44)
+                    self.exp_layer_down = nn.Linear(D_EXP_DEFAULT, self.exp_emb_size)
                     self.exp_layer_audio_down = nn.Linear(D_AUDIO_DEFAULT, self.exp_emb_size)
                 else:
                     self.exp_layer_down = nn.Linear(D_EXP_DEFAULT, self.exp_emb_size)
