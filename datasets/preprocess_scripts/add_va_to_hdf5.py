@@ -764,21 +764,46 @@ def save_to_hdf5(root_diroutectory, out_dir, transcript_file, va_file, log_file_
     all_transcripts_df = pd.read_csv(transcript_file)
     all_va_df = pd.read_csv(va_file)
 
-    # Get the unique file names and pids out of the transcript_df
-    all_transcripts_df["filename"] = all_transcripts_df['filename'].apply(lambda x: "_".join(x.split("_")[1:]) if not x.startswith("P") else x)
-    transcript_unique_idxs = all_transcripts_df.drop_duplicates(subset=['filename'], keep='first').index
-    transcript_titles = all_transcripts_df["filename"].iloc[transcript_unique_idxs]
+    # Filter out UNK entries early
+    all_transcripts_df = all_transcripts_df[all_transcripts_df['user_id'] != 'UNK'].copy()
+    all_va_df = all_va_df[~all_va_df['group_id'].str.contains('UNK', na=False)].copy()
+
+    # Strip the prefix from filenames (unless it starts with P)
+    all_transcripts_df["filename_stripped"] = all_transcripts_df['filename_stripped'].apply(
+        lambda x: "_".join(x.split("_")[1:]) if not x.startswith("P") else x
+    )
+
+    # Get unique filenames and PIDs
+    transcript_unique_idxs = all_transcripts_df.drop_duplicates(subset=['filename_stripped'], keep='first').index
+    transcript_titles = all_transcripts_df["filename_stripped"].iloc[transcript_unique_idxs]
     PIDs = all_transcripts_df["user_id"].iloc[transcript_unique_idxs]
 
-    # Add a pid section to the va and roberta dfs
-    all_transcripts_df[['PID', 'speaker_id', 'index']] = all_transcripts_df['message_id'].str.split('_', expand=True)
-    all_va_df[['PID', 'speaker_id', 'index']] = all_va_df['group_id'].str.split('_', expand=True)
+    # Split message_id in transcripts only where it has 2 underscores (3 parts)
+    transcript_mask = all_transcripts_df['message_id'].str.count('_') == 2
+    all_transcripts_df = all_transcripts_df[transcript_mask].copy()
 
-    # Create a dictionary with base names and PIDs from transcripts
-    transcript_dict = {os.path.splitext(t)[0]: pid for t, pid in zip(transcript_titles, PIDs)}
+    split_transcripts = all_transcripts_df['message_id'].str.split('_', expand=True)
+    split_transcripts.columns = ['PID', 'speaker_id', 'index']
+    all_transcripts_df[['PID', 'speaker_id', 'index']] = split_transcripts
 
-    # Zip only the base name and PID where base names match
+    # Same for group_id in all_va_df
+    va_mask = all_va_df['group_id'].str.count('_') == 2
+    all_va_df = all_va_df[va_mask].copy()
+
+    split_va = all_va_df['group_id'].str.split('_', expand=True)
+    split_va.columns = ['PID', 'speaker_id', 'index']
+    all_va_df[['PID', 'speaker_id', 'index']] = split_va
+
+    # 🔹 Create a dictionary mapping base name (without .csv) to PID
+    transcript_dict = {
+        os.path.splitext(t)[0]: pid
+        for t, pid in zip(transcript_titles, PIDs)
+    }
+
+    # 🔹 Build list of (basename, PID) tuples where matched
     zipped_titles = [(base, transcript_dict[base]) for base in transcript_dict.keys()]
+
+    import pdb; pdb.set_trace()
 
     manager = Manager()
     lock = manager.Lock()  # Create a lock using multiprocessing.Manager
