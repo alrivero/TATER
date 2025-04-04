@@ -738,7 +738,7 @@ def process_video(root_directory, video_title, transcript_df, va_df, out_dir, lo
                 elif len(video_segments[og_id]["valence_arousal"]) != 0:
                     group_data["valence_arousal"][()] = video_segments[og_id]["valence_arousal"]
                 elif "valence_arousal" in group_data:
-                    del temp_hdf5_file[f"{og_id}/valence_arousal"]
+                    del temp_hdf5_file[f"{group_id}/valence_arousal"]
 
             except Exception as e:
                 print(f"Problem processing segment {group_id} from {video_title}!")
