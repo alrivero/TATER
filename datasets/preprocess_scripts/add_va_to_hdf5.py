@@ -733,10 +733,12 @@ def process_video(root_directory, video_title, transcript_df, va_df, out_dir, lo
                 og_id = str(group_data.attrs["og_id"])  # Retrieve the original ID
 
                 # Create or update 'valence_arousal' dataset
-                if "valence_arousal" not in group_data:
+                if "valence_arousal" not in group_data and len(video_segments[og_id]["valence_arousal"]) != 0:
                     group_data.create_dataset("valence_arousal", data=video_segments[og_id]["valence_arousal"])
-                else:
+                elif len(video_segments[og_id]["valence_arousal"]) != 0:
                     group_data["valence_arousal"][()] = video_segments[og_id]["valence_arousal"]
+                else:
+                    del temp_hdf5_file[f"{og_id}/valence_arousal"]
 
             except Exception as e:
                 print(f"Problem processing segment {group_id} from {video_title}!")
