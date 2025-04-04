@@ -828,7 +828,7 @@ def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_pat
         # video_title = transcript_titles.iloc[1]
         # PID = PIDs.iloc[1]
 
-        transcript_df = all_transcripts_df[all_transcripts_df["filename"] == video_title]
+        transcript_df = all_transcripts_df[all_transcripts_df["filename_stripped"] == video_title]
         va_df = all_va_df[all_va_df["PID"] == PID]
 
         import pdb; pdb.set_trace()
