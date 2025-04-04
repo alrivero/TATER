@@ -748,7 +748,7 @@ def process_video(root_directory, video_title, transcript_df, va_df, out_dir, lo
     log_completion(log_file_path, video_title, duration, lock)
     gpu_queue.put((gpu_ID, process_ID))
 
-def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_path, gpus, tasks_per_gpu, include_audio):
+def save_to_hdf5(root_diroutectory, out_dir, transcript_file, va_file, log_file_path, gpus, tasks_per_gpu, include_audio):
     active_processes = []
     for _ in range(max(gpus) + 1):
         active_processes.append([])
@@ -833,12 +833,10 @@ if __name__ == "__main__":
     out_dir = args.out_dir
     transcript_file = args.transcript_file
     va_file = args.va_file
-    roberta_file = args.roberta_file
-    roberta_red_file = args.roberta_red_file
     log_file_path = args.log_file
     gpus = [int(x) for x in args.gpus.split(" ")]
     tasks_per_gpu = [int(x) for x in args.tasks_per_gpu.split(" ")]
     include_audio = not args.exclude_audio
 
-    save_to_hdf5(input_dir, out_dir, transcript_file, va_file, roberta_file, roberta_red_file, log_file_path, gpus, tasks_per_gpu, include_audio)
+    save_to_hdf5(input_dir, out_dir, transcript_file, va_file, log_file_path, gpus, tasks_per_gpu, include_audio)
 
