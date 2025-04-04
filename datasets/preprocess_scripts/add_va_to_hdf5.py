@@ -737,7 +737,7 @@ def process_video(root_directory, video_title, transcript_df, va_df, out_dir, lo
                     group_data.create_dataset("valence_arousal", data=video_segments[og_id]["valence_arousal"])
                 elif len(video_segments[og_id]["valence_arousal"]) != 0:
                     group_data["valence_arousal"][()] = video_segments[og_id]["valence_arousal"]
-                else:
+                elif "valence_arousal" in group_data:
                     del temp_hdf5_file[f"{og_id}/valence_arousal"]
 
             except Exception as e:
@@ -827,11 +827,10 @@ def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_pat
         video_title = "P015_10062022_JF_4092"
         PID = "P015"
 
-        transcript_df = all_transcripts_df[all_transcripts_df["filename_stripped"] == video_title]
-        va_df = all_va_df[all_va_df["PID"] == PID]
+        # transcript_df = all_transcripts_df[all_transcripts_df["filename_stripped"] == video_title]
+        # va_df = all_va_df[all_va_df["PID"] == PID]
 
-        import pdb; pdb.set_trace()
-        process_video(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
+        # process_video(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
         # process_video(root_directory, video_title, transcript_df, va_df, roberta_df, roberta_red_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
 
         video_encoding_proc = Process(target=process_video, args=(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio))
