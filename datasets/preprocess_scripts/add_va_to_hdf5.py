@@ -819,6 +819,9 @@ def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_pat
     #         result.wait()
 
     for video_title, PID in zipped_titles:
+        video_title = "P379_11072023_MG_7660"
+        PID = "P379"
+
         available_gpu, prev_process = gpu_queue.get()
         active_processes[available_gpu][prev_process] = None
 
@@ -828,6 +831,8 @@ def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_pat
         transcript_df = all_transcripts_df[all_transcripts_df["filename"] == video_title]
         va_df = all_va_df[all_va_df["PID"] == PID]
 
+        import pdb; pdb.set_trace()
+        process_video(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
         # process_video(root_directory, video_title, transcript_df, va_df, roberta_df, roberta_red_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
 
         video_encoding_proc = Process(target=process_video, args=(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio))
