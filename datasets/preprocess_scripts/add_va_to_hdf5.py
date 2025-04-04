@@ -794,16 +794,14 @@ def save_to_hdf5(root_diroutectory, out_dir, transcript_file, va_file, log_file_
     split_va.columns = ['PID', 'speaker_id', 'index']
     all_va_df[['PID', 'speaker_id', 'index']] = split_va
 
-    # 🔹 Create a dictionary mapping base name (without .csv) to PID
+    # Create a dictionary mapping base name (without .csv) to PID
     transcript_dict = {
         os.path.splitext(t)[0]: pid
         for t, pid in zip(transcript_titles, PIDs)
     }
 
-    # 🔹 Build list of (basename, PID) tuples where matched
+    # Build list of (basename, PID) tuples where matched
     zipped_titles = [(base, transcript_dict[base]) for base in transcript_dict.keys()]
-
-    import pdb; pdb.set_trace()
 
     manager = Manager()
     lock = manager.Lock()  # Create a lock using multiprocessing.Manager
