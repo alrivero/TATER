@@ -824,12 +824,13 @@ def save_to_hdf5(root_directory, out_dir, transcript_file, va_file, log_file_pat
         available_gpu, prev_process = gpu_queue.get()
         active_processes[available_gpu][prev_process] = None
 
-        # video_title = transcript_titles.iloc[1]
-        # PID = PIDs.iloc[1]
+        video_title = "P015_10062022_JF_4092"
+        PID = "P015"
 
         transcript_df = all_transcripts_df[all_transcripts_df["filename_stripped"] == video_title]
         va_df = all_va_df[all_va_df["PID"] == PID]
 
+        import pdb; pdb.set_trace()
         process_video(root_directory, video_title, transcript_df, va_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
         # process_video(root_directory, video_title, transcript_df, va_df, roberta_df, roberta_red_df, out_dir, log_file_path, available_gpu, prev_process, lock, gpu_queue, include_audio)
 
