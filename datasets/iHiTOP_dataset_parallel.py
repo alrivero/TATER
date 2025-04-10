@@ -621,7 +621,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
         with open(slice_properties_path, "wb") as f:
             pickle.dump(slice_properties, f)
         with open("max_seg_len.pkl", "wb") as f:
-            pickle.dump(np.array(max_length_sampled), f)
+            pickle.dump(np.array(max_img_length), f)
         print(f"Saved slice properties to {slice_properties_path}")
 
         for hdf5_file in hdf5_files:
