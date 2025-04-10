@@ -616,8 +616,6 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                     continue
 
             slice_properties[file_idx] = slices_info
-        
-        slice_properties["meta_data"]
 
         # Save slice properties
         with open(slice_properties_path, "wb") as f:
