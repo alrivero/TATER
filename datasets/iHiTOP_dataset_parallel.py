@@ -555,9 +555,12 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
             seg_indices_by_file[file_idx] = []
         seg_indices_by_file[file_idx].append(int(group_idx))
 
+    max_img_length = 0
     if os.path.exists(slice_properties_path):
         with open(slice_properties_path, "rb") as f:
             slice_properties = pickle.load(f)
+        with open("max_seg_len.pkl", "rb") as f:
+            max_img_length = pickle.load(f)
         print(f"Loaded precomputed slice properties from {slice_properties_path}")
     else:
         # Compute slice properties and save them for reuse
@@ -573,7 +576,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                 group = hdf5_file[str(group_idx)]
 
                 try:
-                    required_keys = ["img", "landmarks_mp", "audio_phonemes", "hubert_frame_level_embeddings_v4"]
+                    required_keys = ["img", "landmarks_mp", "audio_phonemes", "hubert_frame_level_embeddings_v4", "valence_arousal"]
                     if not all(key in group.keys() for key in required_keys):
                         continue
 
@@ -599,6 +602,9 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                     for s, e in zip(idx_start, idx_end):
                         slice_length = e - s
                         landmarks = group["landmarks_mp"][s:e]
+
+                        max_img_length = max(slice_length, max_img_length)
+
                         overall_variance = np.var(landmarks, axis=(0, 1)).sum()
                         lip_landmarks = np.concatenate([
                             landmarks[:, mp_upper_inner_lip_idxs, :],
@@ -610,10 +616,14 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                     continue
 
             slice_properties[file_idx] = slices_info
+        
+        slice_properties["meta_data"]
 
         # Save slice properties
         with open(slice_properties_path, "wb") as f:
             pickle.dump(slice_properties, f)
+        with open("max_seg_len.pkl", "wb") as f:
+            pickle.dump(np.array(max_length_sampled), f)
         print(f"Saved slice properties to {slice_properties_path}")
 
         for hdf5_file in hdf5_files:
@@ -639,7 +649,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                 slice_lengths, overall_variances, mouth_variances = slice_array[:, 0], slice_array[:, 1], slice_array[:, 2]
 
                 # Define bins for segment lengths
-                bin_edges = np.arange(1, 62, 1)  # Bins from 1 to 60
+                bin_edges = np.arange(1, max_length_sampled + 2, 1)  # Bins from 1 to 60
                 bins = np.digitize(slice_lengths, bin_edges)
 
                 # Group slices into bins without initial sorting
