@@ -647,7 +647,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                 slice_lengths, overall_variances, mouth_variances = slice_array[:, 0], slice_array[:, 1], slice_array[:, 2]
 
                 # Define bins for segment lengths
-                bin_edges = np.arange(1, max_length_sampled + 2, 1)  # Bins from 1 to 60
+                bin_edges = np.arange(1, max_img_length + 2, 1)  # Bins from 1 to 60
                 bins = np.digitize(slice_lengths, bin_edges)
 
                 # Group slices into bins without initial sorting
