@@ -978,13 +978,13 @@ def get_datasets_iHiTOP_parallel(config=None):
     val_idxs = np.load(config.dataset.iHiTOP.final_idxs_val)
     test_idxs = np.load(config.dataset.iHiTOP.final_idxs_test)
 
-    train_mask = np.load(config.dataset.iHiTOP.final_mask_train).astype(bool)
-    val_mask = np.load(config.dataset.iHiTOP.final_mask_val).astype(bool)
-    test_mask = np.load(config.dataset.iHiTOP.final_mask_test).astype(bool)
+    # train_mask = np.load(config.dataset.iHiTOP.final_mask_train).astype(bool)
+    # val_mask = np.load(config.dataset.iHiTOP.final_mask_val).astype(bool)
+    # test_mask = np.load(config.dataset.iHiTOP.final_mask_test).astype(bool)
 
-    train_idxs = train_idxs[train_mask]
-    val_idxs = val_idxs[val_mask]
-    test_idxs = test_idxs[test_mask]
+    # train_idxs = train_idxs[train_mask]
+    # val_idxs = val_idxs[val_mask]
+    # test_idxs = test_idxs[test_mask]
 
     return (
         iHiTOPDatasetParallel(hdf5_file_paths, train_idxs, config, test=False),

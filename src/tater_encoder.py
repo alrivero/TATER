@@ -394,7 +394,6 @@ class TATEREncoder(SmirkEncoder):
         if self.use_base_exp:
             outputs.update(self.expression_encoder(img_cat))
         else:
-
             if self.use_latent_exp:
                 exp_encodings_all = self.expression_encoder.encoder(img_cat)
                 exp_encodings_all = F.adaptive_avg_pool2d(exp_encodings_all[-1], (1, 1)).squeeze(-1).squeeze(-1)
