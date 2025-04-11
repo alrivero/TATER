@@ -384,12 +384,13 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict["fps"] = video_group.attrs["fps"]
         video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
 
-        # Gather all image data (subsample if necessary)
+        # Gather all image data (subsample every N frames within start:end)
+        N = 3
         for key, item in video_group.items():
             value = item[()]
             if isinstance(value, np.ndarray) and key in self.framewise_keys:
-                sampled_value = value.copy()  # Copy the data to avoid issues with multiprocessing
-                sampled_value = sampled_value[start:end]
+                sampled_value = value[start:end].copy()  # Copy the sliced data
+                sampled_value = sampled_value[::N]       # Subsample every N frames
                 video_dict[key] = sampled_value
                 # print(key, sampled_value.shape)
         
