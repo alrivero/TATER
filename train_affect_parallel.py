@@ -96,6 +96,7 @@ def train(rank, world_size, config):
     # Load checkpoint if specified
     if config.resume:
         trainer.load_model(config.resume, load_fuse_generator=config.load_fuse_generator, load_encoder=config.load_encoder, device=f"cuda:{rank}")
+    trainer.create_base_encoder()
 
     # Synchronize before wrapping in DDP
     dist.barrier()

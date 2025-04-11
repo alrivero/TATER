@@ -1,7 +1,8 @@
 import random
 import torch
-import src.utils.utils as utils
 import wandb
+import copy
+import src.utils.utils as utils
 
 from torch import nn
 from src.base_trainer import BaseTrainer 
@@ -204,6 +205,24 @@ class CARAAffectTrainer(BaseTrainer):
 
         return outputs, losses
     
+    def create_base_encoder(self):
+        self.base_exp_encoder = copy.deepcopy(self.tater.expression_encoder)
+        self.base_shape_encoder = copy.deepcopy(self.tater.shape_encoder)
+        self.base_pose_encoder = copy.deepcopy(self.tater.pose_encoder)
+        self.base_exp_encoder.eval()
+    
+    def base_encode(self, img):
+        expression_outputs = self.base_exp_encoder(img)
+        shape_outputs = self.base_shape_encoder(img)
+        pose_outputs = self.base_pose_encoder(img)
+
+        outputs = {}
+        outputs.update(expression_outputs)
+        outputs.update(shape_outputs)
+        outputs.update(pose_outputs)
+
+        return outputs
+
     def step(self, batch, batch_idx, epoch, phase='train'):
         if phase == 'train':
             self.train()
