@@ -383,7 +383,7 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict = {}
         video_dict["fps"] = video_group.attrs["fps"]
         video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
-        video_dict["valence_arousal"] = video_group["valence_arousal"][()]
+        video_dict["valence_arousal"] = torch.tensor(video_group["valence_arousal"][()])
 
         # Gather all image data (subsample every N frames within start:end)
         N = 3
