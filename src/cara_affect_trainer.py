@@ -212,10 +212,11 @@ class CARAAffectTrainer(BaseTrainer):
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
         affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]])
-        losses['MSE'] = self.MSELoss(affect_scores, affect_scores_gt)
+        loss = self.MSELoss(affect_scores, affect_scores_gt)
+        losses['MSE'] = loss
         outputs = {}
 
-        return outputs, losses
+        return outputs, losses, loss
     
     def create_base_encoder(self):
         self.base_exp_encoder = copy.deepcopy(self.tater.expression_encoder)
@@ -266,14 +267,14 @@ class CARAAffectTrainer(BaseTrainer):
             encode_feat = self.tater(batch["img"], series_len, token_mask)
     
         affect_scores = self.affect_decoder(encode_feat["exp_class"])
-        outputs, losses, loss_first_path, encoder_output = self.step1(batch, affect_scores, batch_idx, series_len)
+        outputs, losses, loss = self.step1(batch, affect_scores, batch_idx, series_len)
 
         if self.token_masking is not None:
             losses["mask_rate"] = effective_masking_rate
 
         if phase == 'train':
             self.optimizers_zero_grad()  # Zero the gradients
-            loss_first_path.backward()  # Accumulate gradients
+            loss.backward()  # Accumulate gradients
             
             if (batch_idx + 1) % self.accumulate_steps == 0:
                 self.optimizers_step(step_encoder=True, step_fuse_generator=True)  # Apply accumulated gradients
