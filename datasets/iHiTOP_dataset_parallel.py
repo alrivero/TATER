@@ -389,7 +389,7 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
             raise Exception
 
         # Gather all image data (subsample every N frames within start:end)
-        N = 3
+        N = 1
         for key, item in video_group.items():
             value = item[()]
             if isinstance(value, np.ndarray) and key in self.framewise_keys:
