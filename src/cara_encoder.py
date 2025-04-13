@@ -5,11 +5,6 @@ import torch.nn.functional as F
 from .tater_encoder import TATEREncoder
 
 class CARAEncoder(TATEREncoder):
-    def __init__(self, config, n_exp=50, n_shape=300):
-        super().__init__(config, n_exp, n_shape)
-        
-        del self.
-
     def forward(self, img_batch, og_series_len, audio_batch=None, token_mask=None, video_mask=None, audio_mask=None):
         outputs = {}
         if isinstance(img_batch, list):
