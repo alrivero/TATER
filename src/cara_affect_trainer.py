@@ -230,7 +230,7 @@ class CARAAffectTrainer(BaseTrainer):
         r = cov / (std_x * std_y + 1e-8)  # epsilon to avoid division by zero
         return r
 
-    def pearson_p(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def pearson_p(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
         Compute p-values for Pearson correlation between x and y along each column.
         x, y: [N, 2] tensors
