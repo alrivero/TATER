@@ -22,6 +22,17 @@ class CARAAffectTrainer(BaseTrainer):
         self.affect_decoder = AffectDecoder(config)
         self.MSELoss = nn.MSELoss()
 
+        self.token_masking = self.config.train.token_masking
+        self.masking_rate = self.config.train.masking_rate
+        self.max_masked = self.config.train.max_masked
+        self.min_masked = self.config.train.min_masked
+        if not (self.token_masking == "Random" or self.token_masking == "Phoneme"):
+            self.token_masking = None
+
+        self.modality_dropout = self.config.train.modality_dropout
+        self.video_dropout_rate = self.config.train.video_dropout_rate
+        self.audio_dropout_rate = self.config.train.audio_dropout_rate
+
     def logging(self, batch_idx, losses, phase):
         """
         Logs losses and other information during training and evaluation.
@@ -296,7 +307,7 @@ class CARAAffectTrainer(BaseTrainer):
 
         # Remove the shape and pose encoders
         del self.tater.shape_transformer
-        del self.tater.pose_transformer
+        # del self.tater.pose_transformer
 
     def save_model(self, state_dict, save_path):
         torch.save(state_dict, save_path)
