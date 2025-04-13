@@ -209,7 +209,7 @@ class CARAAffectTrainer(BaseTrainer):
         
         return audio_mask, video_mask
     
-    def step1(batch, affect_scores, batch_idx, series_len):
+    def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
         losses['MSE'] = torch.MSE(affect_scores, batch["valence_arousal"])
         outputs = {}
