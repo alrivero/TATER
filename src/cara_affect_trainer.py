@@ -3,6 +3,7 @@ import torch
 import wandb
 import copy
 import src.utils.utils as utils
+import scipy.stats
 
 from torch import nn
 from src.base_trainer import BaseTrainer 
@@ -67,7 +68,7 @@ class CARAAffectTrainer(BaseTrainer):
 
                 wandb_log_data[f"{phase}/lr"] = self.scheduler.get_last_lr()[0]
                 wandb_log_data[f"{phase}/batch_idx"] = batch_idx
-                
+
                 wandb.log(wandb_log_data)
 
     def configure_optimizers(self, num_steps, use_default_annealing=False):
@@ -214,11 +215,50 @@ class CARAAffectTrainer(BaseTrainer):
         
         return audio_mask, video_mask
     
+    def pearson_r(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        Compute Pearson r for each column in x and y.
+        Returns a [N]-shaped tensor. Differentiable.
+        """
+        x_centered = x - x.mean(dim=0, keepdim=True)
+        y_centered = y - y.mean(dim=0, keepdim=True)
+
+        cov = (x_centered * y_centered).mean(dim=0)
+        std_x = x.std(dim=0)
+        std_y = y.std(dim=0)
+
+        r = cov / (std_x * std_y + 1e-8)  # epsilon to avoid division by zero
+        return r
+
+    def pearson_p(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        Compute p-values from Pearson correlation for each column in x and y.
+        
+        Args:
+            x: Tensor of shape [N, 2]
+            y: Tensor of shape [N, 2]
+        
+        Returns:
+            p_vals: Tensor of shape [2] with p-values (non-differentiable)
+        """
+        assert x.shape == y.shape and x.shape[1] == 2, "Inputs must be of shape [N, 2]"
+
+        p_vals = []
+        for i in range(2):
+            _, p = scipy.stats.pearsonr(x[:, i].cpu().numpy(), y[:, i].cpu().numpy())
+            p_vals.append(p)
+
+        return torch.tensor(p_vals)
+
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
         affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]])
         loss = self.MSELoss(affect_scores, affect_scores_gt)
+        
         losses['MSE'] = loss
+        losses["Pearson r"] = self.pearson_r(affect_scores, affect_scores_gt)
+        losses["p-value"] = self.pearson_p(affect_scores, affect_scores_gt)
+
         outputs = {}
 
         return outputs, losses, loss
