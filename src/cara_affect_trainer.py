@@ -64,11 +64,10 @@ class CARAAffectTrainer(BaseTrainer):
             # Log losses and learning rates to wandb
             if 'wandb' in globals() and wandb.run is not None:
                 wandb_log_data = {f"{phase}/{k}": v for k, v in losses.items()}
-                wandb_log_data[f"{phase}/encoder_lr"] = self.encoder_scheduler.get_last_lr()[0]
-                wandb_log_data[f"{phase}/gan_D_recon_loss"] = self.last_D_value
-                if self.config.arch.enable_fuse_generator and self.config.train.optimize_generator:
-                    wandb_log_data[f"{phase}/generator_lr"] = self.smirk_generator_scheduler.get_last_lr()[0]
+
+                wandb_log_data[f"{phase}/lr"] = self.scheduler.get_last_lr()[0]
                 wandb_log_data[f"{phase}/batch_idx"] = batch_idx
+                
                 wandb.log(wandb_log_data)
 
     def configure_optimizers(self, num_steps, use_default_annealing=False):
