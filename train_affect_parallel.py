@@ -81,6 +81,11 @@ def train(rank, world_size, config):
 
     # Initialize paths and data loaders
     if rank == 0:
+        os.makedirs(config.train.log_path, exist_ok=True)
+        train_images_save_path = os.path.join(config.train.log_path, 'train_images')
+        os.makedirs(train_images_save_path, exist_ok=True)
+        val_images_save_path = os.path.join(config.train.log_path, 'val_images')
+        os.makedirs(val_images_save_path, exist_ok=True)
         OmegaConf.save(config, os.path.join(config.train.log_path, 'config.yaml'))
 
     # Synchronize processes before further initialization
