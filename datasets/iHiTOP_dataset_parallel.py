@@ -585,6 +585,9 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                     if not all(key in group.keys() for key in required_keys):
                         continue
 
+                    if len(group["valence_arousal"]) != 2:
+                        continue
+
                     img_length = len(group["img"])
                     removed_frames_length = len(group["removed_frames"])
                     total_length = img_length + removed_frames_length
