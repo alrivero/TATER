@@ -230,24 +230,19 @@ class CARAAffectTrainer(BaseTrainer):
         r = cov / (std_x * std_y + 1e-8)  # epsilon to avoid division by zero
         return r
 
-    def pearson_p(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def pearson_p(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Compute p-values from Pearson correlation for each column in x and y.
-        
-        Args:
-            x: Tensor of shape [N, 2]
-            y: Tensor of shape [N, 2]
-        
-        Returns:
-            p_vals: Tensor of shape [2] with p-values (non-differentiable)
+        Compute p-values for Pearson correlation between x and y along each column.
+        x, y: [N, 2] tensors
+        Returns: [2]-shaped tensor of p-values
         """
-        assert x.shape == y.shape and x.shape[1] == 2, "Inputs must be of shape [N, 2]"
-
+        assert x.shape == y.shape and x.shape[1] == 2, "Expected shape [N, 2]"
         p_vals = []
         for i in range(2):
-            _, p = scipy.stats.pearsonr(x[:, i].cpu().numpy(), y[:, i].cpu().numpy())
+            x_np = x[:, i].detach().cpu().numpy()
+            y_np = y[:, i].detach().cpu().numpy()
+            _, p = scipy.stats.pearsonr(x_np, y_np)
             p_vals.append(p)
-
         return torch.tensor(p_vals)
 
     def step1(self, batch, affect_scores, batch_idx, series_len):
