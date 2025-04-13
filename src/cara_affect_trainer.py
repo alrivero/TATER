@@ -251,8 +251,14 @@ class CARAAffectTrainer(BaseTrainer):
         loss = self.MSELoss(affect_scores, affect_scores_gt)
         
         losses['MSE'] = loss
-        losses["Pearson r"] = self.pearson_r(affect_scores, affect_scores_gt)
-        losses["p-value"] = self.pearson_p(affect_scores, affect_scores_gt)
+
+        r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
+        p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
+
+        losses["Pearson r V"] = r_v
+        losses["Pearson r A"] = r_a
+        losses["p-value V"] = p_v
+        losses["p-value A"] = p_a
 
         outputs = {}
 
