@@ -59,7 +59,7 @@ class CARAEncoder(TATEREncoder):
             exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
         
         outputs["exp_residual_out"] = exp_residual_out
-        outputs["exp_class"] = exp_class
+        outputs["exp_class"] = exp_class.reshape(len(img_batch), -1)
     
         return outputs
 
