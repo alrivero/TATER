@@ -33,6 +33,9 @@ class CARAAffectTrainer(BaseTrainer):
         self.video_dropout_rate = self.config.train.video_dropout_rate
         self.audio_dropout_rate = self.config.train.audio_dropout_rate
 
+        self.accumulate_steps = config.train.accumulate_steps if hasattr(config.train, 'accumulate_steps') else 1
+        self.global_step = 0  # to track global steps
+
     def logging(self, batch_idx, losses, phase):
         """
         Logs losses and other information during training and evaluation.
