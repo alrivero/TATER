@@ -2,7 +2,7 @@
 import torch
 import torch.nn.functional as F
 
-from tater_encoder import TATEREncoder
+from .tater_encoder import TATEREncoder
 
 class CARAEncoder(TATEREncoder):
     def __init__(self, config, n_exp=50, n_shape=300):
