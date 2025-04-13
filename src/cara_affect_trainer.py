@@ -211,7 +211,7 @@ class CARAAffectTrainer(BaseTrainer):
     
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
-        losses['MSE'] = torch.MSE(affect_scores, batch["valence_arousal"])
+        losses['MSE'] = self.MSELoss(affect_scores, batch["valence_arousal"])
         outputs = {}
 
         return outputs, losses
