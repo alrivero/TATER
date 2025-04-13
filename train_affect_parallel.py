@@ -8,7 +8,7 @@ import torch.multiprocessing as mp
 import numpy as np
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from src.tater_trainer_parallel import TATERTrainerParallel
+from src.cara_affect_trainer import CARAAffectTrainer
 from datasets.data_utils import load_dataloaders_parallel
 from torch.distributed import get_rank, is_initialized
 import traceback
@@ -92,7 +92,7 @@ def train(rank, world_size, config):
     dist.barrier()
 
     # Initialize trainer and wrap in DDP
-    trainer = TATERTrainerParallel(config).to(rank)
+    trainer = CARAAffectTrainer(config).to(rank)
     trainer.device = rank
     trainer.tater.device = rank
     num_params = sum(p.numel() for p in trainer.parameters())
