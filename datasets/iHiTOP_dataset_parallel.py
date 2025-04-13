@@ -385,6 +385,9 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
         video_dict["valence_arousal"] = torch.tensor(video_group["valence_arousal"][()])
 
+        if len(video_dict["valence_arousal"]) != 2:
+            raise Exception
+
         # Gather all image data (subsample every N frames within start:end)
         N = 3
         for key, item in video_group.items():
@@ -489,8 +492,6 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         else:
             video_dict["audio_feat"] = video_dict["wav2vec_frame_level_embeddings"]
         
-
-
         return video_dict
 
 def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
