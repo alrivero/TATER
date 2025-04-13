@@ -100,6 +100,9 @@ class CARAAffectTrainer(BaseTrainer):
             self.optimizer, T_max=effective_total_steps, eta_min=gen_max_lr
         )
 
+    def scheduler_step(self):
+        self.scheduler.step()
+
     def optimizers_zero_grad(self):
         self.optimizer.zero_grad()
 
