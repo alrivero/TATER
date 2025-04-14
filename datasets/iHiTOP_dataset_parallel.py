@@ -19,6 +19,11 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from scipy.stats import skewnorm
 
+AROUSAL_MIN = -4.864447123430094
+AROUSAL_MAX = 12.543343540992574
+VALENCE_MIN = -7.904116928906085
+VALENCE_MAX = 28.562254485264887
+
 
 class iHiTOPDatasetParallel(BaseVideoDataset):
     def __init__(self, hdf5_paths, split_idxs, config, test=False):
@@ -383,10 +388,13 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict = {}
         video_dict["fps"] = video_group.attrs["fps"]
         video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
-        video_dict["valence_arousal"] = torch.tensor(video_group["valence_arousal"][()])
 
+        video_dict["valence_arousal"] = torch.tensor(video_group["valence_arousal"][()])
         if len(video_dict["valence_arousal"]) != 2:
             raise Exception
+        
+        video_dict["valence_arousal"][0] = (video_dict["valence_arousal"][0] - AROUSAL_MIN) / (AROUSAL_MAX - AROUSAL_MIN)
+        video_dict["valence_arousal"][1] = (video_dict["valence_arousal"][1] - VALENCE_MIN) / (VALENCE_MAX - VALENCE_MIN)
 
         # Gather all image data (subsample every N frames within start:end)
         N = 1
