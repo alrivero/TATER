@@ -149,6 +149,9 @@ def train(rank, world_size, config):
                     if not batch:
                         continue
 
+                    if batch_idx >= 100:
+                        break
+
                     # ensure all ranks sync each batch
                     dist.barrier()
 
