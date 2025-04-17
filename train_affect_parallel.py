@@ -226,6 +226,7 @@ def train(rank, world_size, config):
                     print(f"[Rank 0] Saved metrics to {save_path}")
 
         print(f"[Rank {rank}] Finished epoch {epoch}")
+        dist.barrier()
 
     if rank == 0:
         print("[Rank 0] Finishing wandb")
