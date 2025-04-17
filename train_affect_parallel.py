@@ -15,31 +15,33 @@ from src.utils import metrics
 import traceback
 
 # ────────────────────────────────────────────────────────────────────
-# Force 'spawn' start method to avoid forking a live CUDA context
+# Force 'spawn' start method before any CUDA context is created
 mp.set_start_method('spawn', force=True)
 # ────────────────────────────────────────────────────────────────────
-
 
 def parse_args():
     """
     Parse configuration and command-line arguments using OmegaConf.
-    Adds support for threads_per_rank as a command-line argument.
+    Adds support for threads_per_rank, num_workers, and pin_memory as CLI args.
     """
+    # Load the YAML config
     conf = OmegaConf.load(sys.argv[1])
-    OmegaConf.set_struct(conf, True)
-    sys.argv = [sys.argv[0]] + sys.argv[2:]  # remove the config filename
+    # Remove the config filename from sys.argv so CLI merges start at sys.argv[1]
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
     conf.merge_with_cli()
-    
-    # Default value for threads_per_rank if not provided
+
+    # Default threads_per_rank
     if "threads_per_rank" not in conf:
         conf.threads_per_rank = 4
 
-    # Add dataloader params (you can override via CLI)
+    # Default dataloader params (override via CLI or YAML)
     if "num_workers" not in conf.train:
         conf.train.num_workers = 4
     if "pin_memory" not in conf.train:
         conf.train.pin_memory = False
 
+    # Now freeze the config tree so no extra keys get added later
+    OmegaConf.set_struct(conf, True)
     return conf
 
 
@@ -78,17 +80,17 @@ def set_thread_limits(num_threads: int):
 
 
 def train(rank, world_size, config):
-    # 1) limit BLAS / OpenMP / OpenCV threads per process
+    # 1) Limit threads per process
     set_thread_limits(config.threads_per_rank)
 
-    # 2) init process group & GPU
+    # 2) Initialize DDP
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
     print(f"Initializing Rank {rank}.")
 
     init_wandb(config)
 
-    # Only rank 0 writes logs & config
+    # Only rank 0 manages logging directories
     if rank == 0:
         os.makedirs(config.train.log_path, exist_ok=True)
         for sub in ("train_images", "val_images"):
@@ -97,11 +99,12 @@ def train(rank, world_size, config):
 
     dist.barrier()
 
-    # Build model & DDP wrap
+    # 3) Build and wrap model
     trainer = CARAAffectTrainer(config).to(rank)
     trainer.device = rank
     trainer.tater.device = rank
     print(f"Rank {rank}: Model params = {sum(p.numel() for p in trainer.parameters())}")
+
     if config.resume:
         trainer.load_model(
             config.resume,
@@ -113,14 +116,14 @@ def train(rank, world_size, config):
     dist.barrier()
     trainer = torch.nn.parallel.DistributedDataParallel(trainer, device_ids=[rank])
 
-    # ─── load dataloaders with explicit num_workers & pin_memory ───
+    # 4) Initialize dataloaders with explicit num_workers & pin_memory
     train_loader, val_loader, effective_seg_count = load_dataloaders_parallel(
         config, rank, world_size,
         num_workers=config.train.num_workers,
         pin_memory=config.train.pin_memory
     )
-    # ────────────────────────────────────────────────────────────────
 
+    # ---------------- Training loop ---------------- #
     for epoch in range(config.train.resume_epoch, config.train.num_epochs):
         print(f"Rank {rank} starting epoch {epoch}")
         train_loader.sampler.set_epoch(epoch)
@@ -144,12 +147,14 @@ def train(rank, world_size, config):
                     if not batch:
                         continue
 
-                    # just 100 iters for quick debugging
+                    # quick debug: first 100 batches only
                     if batch_idx >= 100:
                         break
 
+                    # sync all ranks before each batch
                     dist.barrier()
-                    # move tensors to GPU
+
+                    # move tensors to correct GPU
                     for k, v in batch.items():
                         if k not in ("audio_phonemes", "text_phonemes") and torch.is_tensor(v[0]):
                             batch[k] = [x.to(rank) for x in v]
@@ -169,14 +174,14 @@ def train(rank, world_size, config):
                         print(f"Error at batch {batch_idx}, dumping traceback:")
                         traceback.print_exc()
 
-                # save checkpoints on rank 0 during training
+                # save intermediate checkpoints on train phase
                 if phase == "train" and rank == 0 and (
                     batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1
                 ):
                     ckpt = os.path.join(config.train.log_path, f"model_{epoch}_{batch_idx}.pt")
                     trainer.module.save_model(trainer.module.state_dict(), ckpt)
 
-            # ─── after validation loop: gather + compute metrics ───
+            # ----------- VAL PHASE: gather + compute metrics ----------- #
             if phase == "val":
                 dist.barrier()
                 local_data = [all_affect_out, all_affect_gt, all_video_IDs]
@@ -199,35 +204,42 @@ def train(rank, world_size, config):
                     metrics_out = []
                     dims = arr_out.shape[-1]
                     for i in range(dims):
+                        # global MSE & Pearson
                         mse = float(np.mean((arr_out[:,i] - arr_gt[:,i])**2))
                         r_all = float(metrics.pearson_r(arr_out[:,i], arr_gt[:,i]))
                         p_all = float(metrics.pearson_p(arr_out[:,i], arr_gt[:,i]))
                         metrics_out += [mse, r_all, p_all]
 
+                        # within-video Pearson
                         vids_unique = np.unique(arr_vid)
                         r_within, p_within, nan_c = 0.0, 0.0, 0
                         for v in vids_unique:
-                            m = (arr_vid==v)
-                            r_v = metrics.pearson_r(arr_out[m,i], arr_gt[m,i])
+                            mask = (arr_vid == v)
+                            r_v = metrics.pearson_r(arr_out[mask,i], arr_gt[mask,i])
+                            p_v = metrics.pearson_p(arr_out[mask,i], arr_gt[mask,i])
                             if np.isnan(r_v):
                                 nan_c += 1
                             else:
                                 r_within += r_v
-                                p_within += metrics.pearson_p(arr_out[m,i], arr_gt[m,i])
-                        valid = len(vids_unique)-nan_c
-                        if valid>0:
-                            r_within/=valid; p_within/=valid
+                                p_within += p_v
+                        valid = len(vids_unique) - nan_c
+                        if valid > 0:
+                            r_within /= valid
+                            p_within /= valid
                         metrics_out += [r_within, p_within]
 
+                        # between-video Pearson
                         avg_o = np.array([arr_out[arr_vid==v,i].mean() for v in vids_unique])
                         avg_g = np.array([arr_gt[arr_vid==v,i].mean() for v in vids_unique])
                         metrics_out += [
-                            float(metrics.pearson_r(avg_o,avg_g)),
-                            float(metrics.pearson_p(avg_o,avg_g)),
+                            float(metrics.pearson_r(avg_o, avg_g)),
+                            float(metrics.pearson_p(avg_o, avg_g)),
                             nan_c
                         ]
 
-                    save_path = os.path.join(config.train.log_path, f"metrics_{epoch}_{batch_idx}.npy")
+                    save_path = os.path.join(
+                        config.train.log_path, f"metrics_{epoch}_{batch_idx}.npy"
+                    )
                     np.save(save_path, np.array(metrics_out, dtype=float))
 
         # end of epoch
