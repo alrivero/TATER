@@ -14,7 +14,6 @@ from torch.distributed import get_rank, is_initialized
 from src.utils import metrics
 import traceback
 
-
 def parse_args():
     """
     Parse configuration and command-line arguments using OmegaConf.
@@ -151,10 +150,6 @@ def train(rank, world_size, config):
                     # ensure all ranks sync each batch
                     dist.barrier()
 
-                    if batch_idx >= 10:
-                        break
-
-
                     # move tensors to GPU
                     for key in batch:
                         if key not in ["audio_phonemes", "text_phonemes"] and torch.is_tensor(batch[key][0]):
@@ -229,13 +224,15 @@ def train(rank, world_size, config):
                         p_all = float(metrics.pearson_p(all_affect_out[:, i], all_affect_gt[:, i]))
                         metrics_out += [mse_val, r_all, p_all]
 
-                        # within-video Pearson
+                        # within-video Pearson with progress bar
                         video_ids = np.unique(all_video_IDs)
                         r_within = 0.0
                         p_within = 0.0
                         nan_count = 0
 
-                        for vid in video_ids:
+                        for vid in tqdm(video_ids,
+                                        desc=f"Dim {i} within-video",
+                                        leave=False):
                             mask = (all_video_IDs == vid)
                             out_v = all_affect_out[mask, i]
                             gt_v = all_affect_gt[mask, i]
@@ -266,11 +263,32 @@ def train(rank, world_size, config):
                         p_between = float(metrics.pearson_p(avg_out, avg_gt))
                         metrics_out += [r_between, p_between, nan_count]
 
+                    # Convert to numpy array
+                    metrics_arr = np.array(metrics_out, dtype=float)
+
+                    # Print a summary header
+                    print(f"\n=== Metrics for epoch {epoch}, batch {batch_idx} ===")
+
+                    # Nicely format by dimension:
+                    for i in range(n_dims):
+                        start = i * 8
+                        mse, r_all, p_all, r_within, p_within, r_between, p_between, nan_count = (
+                            metrics_arr[start:start+8]
+                        )
+                        print(
+                            f" Dim {i:2d} → "
+                            f"MSE={mse:.4f}, "
+                            f"Pearson(all)={r_all:.4f}(p={p_all:.2e}), "
+                            f"Within={r_within:.4f}(p={p_within:.2e}), "
+                            f"Between={r_between:.4f}(p={p_between:.2e}), "
+                            f"nans={int(nan_count)}"
+                        )
+
                     # save to disk
                     metrics_path = os.path.join(
                         config.train.log_path, f'metrics_{epoch}_{batch_idx}.npy'
                     )
-                    np.save(metrics_path, np.array(metrics_out, dtype=float))
+                    np.save(metrics_path, metrics_arr)
 
         # end of epoch
 
