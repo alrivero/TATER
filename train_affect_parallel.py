@@ -141,7 +141,7 @@ def train(rank, world_size, config):
                         wandb.log({"epoch": epoch, "batch_idx": batch_idx})
 
                     if phase == 'val':
-                        all_affect_out.append(out["valence_arousal"].detach().cpu().numpy())
+                        all_affect_out.append(out["valence_arousal_out"].detach().cpu().numpy())
                         all_affect_gt.append(out["valence_arousal_gt"].detach().cpu().numpy())
                         all_video_IDs.append(batch["video_ID"])
 
