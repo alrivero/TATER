@@ -123,8 +123,10 @@ def train(rank, world_size, config):
                 position=rank
             ):
                 # no per-batch barrier—ensures barrier counts match
-                print(f"[Rank {rank}] phase={phase} batch_idx={batch_idx}")
                 try:
+                    # ensure all ranks sync each batch
+                    dist.barrier()
+
                     # move tensors to GPU
                     for k, v in batch.items():
                         if k in ("audio_phonemes", "text_phonemes"):
