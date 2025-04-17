@@ -148,12 +148,12 @@ def train(rank, world_size, config):
                 try:
                     if not batch:
                         continue
+                    # ensure all ranks sync each batch
+                    dist.barrier()
 
                     if batch_idx >= 10:
                         break
 
-                    # ensure all ranks sync each batch
-                    dist.barrier()
 
                     # move tensors to GPU
                     for key in batch:
