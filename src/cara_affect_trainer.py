@@ -329,8 +329,10 @@ class CARAAffectTrainer(BaseTrainer):
             
             iteration = batch_idx if epoch == 0 else -1
             self.tater.update_residual_scale(iteration)
-        
-        self.logging(batch_idx, losses, phase)
+
+            self.logging(batch_idx, losses, phase)
+
+        outputs["valence_arousal_gt"] = torch.cat([x[None] for x in batch["valence_arousal"]])
         return outputs
 
     def load_model(self, resume, load_fuse_generator=True, load_encoder=True, device='cuda', strict_load=False):
