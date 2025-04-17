@@ -141,29 +141,43 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # synchronize all ranks before reducing
-                dist.barrier()
+                # ---- NEW: tensor-based gather across all ranks ----
 
-                # collect outputs/GTs/IDs from every rank
-                local_data = [all_out, all_gt, all_vids]
-                gathered = []
-                dist.all_gather_object(gathered, local_data)
+                # 1) convert your Python lists into GPU tensors
+                out_tensor = torch.tensor(
+                    np.concatenate(all_out, axis=0),
+                    device=rank,
+                )
+                gt_tensor = torch.tensor(
+                    np.concatenate(all_gt, axis=0),
+                    device=rank,
+                )
+                # assuming video_ID is integer; adjust dtype if needed
+                vid_tensor = torch.tensor(
+                    np.array(all_vids),
+                    device=rank,
+                    dtype=torch.long,
+                )
 
+                # 2) allocate per-rank buffers
+                outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
+                gts_gather = [torch.zeros_like(gt_tensor) for _ in range(world_size)]
+                vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
+
+                # 3) do NCCL-safe all_gather on each field
+                dist.all_gather(outs_gather, out_tensor)
+                dist.all_gather(gts_gather,  gt_tensor)
+                dist.all_gather(vids_gather, vid_tensor)
+
+                # 4) only rank 0 flattens and computes metrics
                 if rank == 0:
-                    # flatten and concatenate
-                    outs, gts, vids = [], [], []
-                    for rd_out, rd_gt, rd_vid in gathered:
-                        outs.extend(rd_out)
-                        gts.extend(rd_gt)
-                        for arr in rd_vid:
-                            vids.extend(arr.tolist() if isinstance(arr, np.ndarray) else list(arr))
+                    arr_out = torch.cat(outs_gather, dim=0).cpu().numpy()
+                    arr_gt  = torch.cat(gts_gather,  dim=0).cpu().numpy()
+                    arr_vid = torch.cat(vids_gather, dim=0).cpu().numpy()
 
-                    arr_out = np.concatenate(outs, axis=0)
-                    arr_gt  = np.concatenate(gts, axis=0)
-                    arr_vid = np.array(vids)
-                    n_dims  = arr_out.shape[-1]
-
+                    n_dims = arr_out.shape[-1]
                     metrics_out = []
+
                     for i in range(n_dims):
                         mse   = float(np.mean((arr_out[:,i] - arr_gt[:,i])**2))
                         r_all = float(metrics.pearson_r(arr_out[:,i], arr_gt[:,i]))
@@ -172,11 +186,7 @@ def train(rank, world_size, config):
 
                         vids_u = np.unique(arr_vid)
                         r_w, p_w, nan_c = 0.0, 0.0, 0
-                        for vid in tqdm(
-                            vids_u,
-                            desc=f"Dim {i} within-video",
-                            leave=False
-                        ):
+                        for vid in tqdm(vids_u, desc=f"Dim {i} within-video", leave=False):
                             mask = (arr_vid == vid)
                             rv = metrics.pearson_r(arr_out[mask,i], arr_gt[mask,i])
                             pv = metrics.pearson_p(arr_out[mask,i], arr_gt[mask,i])
