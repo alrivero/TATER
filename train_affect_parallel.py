@@ -122,6 +122,10 @@ def train(rank, world_size, config):
                 if not batch:
                     continue
                 print(f"[Rank {rank}] phase={phase} batch_idx={batch_idx}")
+                # move tensors to GPU
+                for k, v in batch.items():
+                    if k not in ("audio_phonemes", "text_phonemes") and torch.is_tensor(v[0]):
+                        batch[k] = [x.to(rank) for x in v]
 
                 out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
                 if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
