@@ -141,14 +141,13 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # sync before gather
+                # synchronize all ranks before reducing
                 dist.barrier()
-                # gather on all ranks
+
+                # collect outputs/GTs/IDs from every rank
                 local_data = [all_out, all_gt, all_vids]
-                gathered = [None] * world_size if rank == 0 else None
-                dist.gather_object(local_data, gathered, dst=0)
-                # sync after gather
-                dist.barrier()
+                gathered = []
+                dist.all_gather_object(gathered, local_data)
 
                 if rank == 0:
                     # flatten and concatenate
