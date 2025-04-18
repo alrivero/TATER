@@ -31,7 +31,7 @@ def init_wandb(config):
     rank = get_rank() if is_initialized() else 0
     if rank == 0:
         wandb.init(
-            project="your_project_name",
+            project="CARA_Affect",
             config=OmegaConf.to_container(config, resolve=True)
         )
 
