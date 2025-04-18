@@ -219,24 +219,30 @@ class CARAAffectTrainer(BaseTrainer):
     
     def pearson_r(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Compute Pearson r for each column in x and y.
-        Returns a [N]-shaped tensor. Differentiable.
+        Compute the sample Pearson correlation r for each column in x and y,
+        exactly as scipy.stats.pearsonr does internally (ddof=1).
+        Returns a [num_features]-shaped tensor.
         """
-        x_centered = x - x.mean(dim=0, keepdim=True)
-        y_centered = y - y.mean(dim=0, keepdim=True)
-
-        cov = (x_centered * y_centered).mean(dim=0)
-        std_x = x.std(dim=0)
-        std_y = y.std(dim=0)
-
-        r = cov / (std_x * std_y + 1e-8)  # epsilon to avoid division by zero
+        # x, y: [N, F]
+        assert x.shape == y.shape
+        # 1) center
+        xm = x.mean(dim=0, keepdim=True)    # [1, F]
+        ym = y.mean(dim=0, keepdim=True)    # [1, F]
+        x_d = x - xm                         # [N, F]
+        y_d = y - ym                         # [N, F]
+        # 2) numerator = sum_j (x_j - xm)*(y_j - ym)
+        num = (x_d * y_d).sum(dim=0)         # [F]
+        # 3) denominator = sqrt( sum_j (x_j - xm)^2 * sum_j (y_j - ym)^2 )
+        den = torch.sqrt((x_d**2).sum(dim=0) * (y_d**2).sum(dim=0))  # [F]
+        # 4) r = num / den   → matches scipy exactly (NaN if constant input)
+        r = num / den
         return r
 
     def pearson_p(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Compute p-values for Pearson correlation between x and y along each column.
-        x, y: [N, 2] tensors
-        Returns: [2]-shaped tensor of p-values
+        Compute two‐tailed p‐values by deferring to scipy.stats.pearsonr,
+        which itself computes r in the same sample‐based way and then
+        applies the Student’s t–test.
         """
         assert x.shape == y.shape and x.shape[1] == 2, "Expected shape [N, 2]"
         p_vals = []
