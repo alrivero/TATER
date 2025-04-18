@@ -260,7 +260,7 @@ class CARAAffectTrainer(BaseTrainer):
         mse = self.MSELoss(affect_scores, affect_scores_gt)
         huber = self.HuberLoss(affect_scores, affect_scores_gt)
 
-        loss = huber
+        loss = mse
 
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
         p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
