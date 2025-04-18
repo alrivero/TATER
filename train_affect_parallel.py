@@ -110,7 +110,7 @@ def train(rank, world_size, config):
                 position=rank,
                 leave=False
             )):
-                # per‑batch dist.barrier() removed
+                dist.barrier()
 
                 # move tensors to GPU
                 for k, v in batch.items():
