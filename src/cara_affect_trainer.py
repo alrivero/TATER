@@ -359,8 +359,8 @@ class CARAAffectTrainer(BaseTrainer):
 
         # Report skipped keys
         skipped_keys = [k for k in loaded_state_dict.keys() if k not in filtered_state_dict]
-        # if skipped_keys:
-            # print(f"Skipped loading weights for {len(skipped_keys)} keys due to shape mismatches: {skipped_keys}")
+        if skipped_keys:
+            print(f"Skipped loading weights for {len(skipped_keys)} keys due to shape mismatches: {skipped_keys}")
 
         # Remove the shape and pose encoders
         del self.tater.shape_transformer
