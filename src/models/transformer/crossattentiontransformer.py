@@ -13,7 +13,7 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         dropout: float = 0.1,
         activation: Callable[[Tensor], Tensor] = nn.ReLU(),
         layer_norm_eps: float = 1e-5,
-        batch_first: bool = False,
+        batch_first: bool = True,
         norm_first: bool = False,
         bias: bool = True,
         device=None,
@@ -167,7 +167,8 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_C,
                 dropout=dropout,
-                activation=activation_fn
+                activation=activation_fn,
+                batch_first=True
             )
             for _ in range(self.concat_layers)
         ])
@@ -227,7 +228,7 @@ class CrossAttentionTransformer(nn.Module):
 
         # Pass through transformer layers without cross attention
         for i in range(self.encode_layers):
-            x1 = self.encoder_1[i](x1, src_key_padding_mask=attention_mask)
+            x1 = self.encoder_1[i](x1, src_key_padding_mask=attentionOM_mask)
             x2 = self.encoder_2[i](x2, src_key_padding_mask=attention_mask)
 
         # Path 1: Continuing x1 without cross attention/audio for first residual
