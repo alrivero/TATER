@@ -132,6 +132,9 @@ def train(rank, world_size, config):
                     all_gt.append(out['valence_arousal_gt'].detach().cpu().numpy())
                     all_vids.extend(batch['video_ID'])
 
+                if rank == 0 and batch_idx % 10:
+                    print(out['valence_arousal_out'])
+
                 if phase == 'train' and rank == 0 and (
                     batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1
                 ):
