@@ -164,9 +164,9 @@ def train(rank, world_size, config):
                 gts_gather = [torch.zeros_like(gt_tensor) for _ in range(world_size)]
                 vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
 
-                print(outs_gather, [x.shape for x in outs_gather])
-                print(gts_gather, [x.shape for x in gts_gather])
-                print(vids_gather, [x.shape for x in vids_gather])
+                print(out_tensor, [x.shape for x in out_tensor])
+                print(gt_tensor, [x.shape for x in gt_tensor])
+                print(vid_tensor, [x.shape for x in vid_tensor])
 
                 torch.cuda.synchronize(rank)
                 dist.barrier()
