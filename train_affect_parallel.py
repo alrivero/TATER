@@ -186,6 +186,7 @@ def train(rank, world_size, config):
 
                 # only rank 0 computes metrics
                 if rank == 0:
+                    print("STARTING METRICS COMPUTATION")
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
                     vids_u = np.unique(arr_vid)
