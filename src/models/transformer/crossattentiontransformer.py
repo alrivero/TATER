@@ -232,7 +232,7 @@ class CrossAttentionTransformer(nn.Module):
 
         # Pass through transformer layers without cross attention
         for i in range(self.encode_layers):
-            x1 = self.encoder_1[i](x1, src_key_padding_mask=attentionOM_mask)
+            x1 = self.encoder_1[i](x1, src_key_padding_mask=attention_mask)
             x2 = self.encoder_2[i](x2, src_key_padding_mask=attention_mask)
 
         # Path 1: Continuing x1 without cross attention/audio for first residual
