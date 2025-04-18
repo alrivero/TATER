@@ -79,7 +79,7 @@ arch:
   TATER:
     interp_down_residual: False
     use_interp_linear_layer: False
-    downsample_rate: 3
+    downsample_rate: 5
     apply_linear_after_res: False
 
     Expression:
