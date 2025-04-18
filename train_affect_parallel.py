@@ -56,13 +56,9 @@ def train(rank, world_size, config):
     # 1) limit threads
     set_thread_limits(config.threads_per_rank)
 
-    # 2) initialize DDP
+    # 2) initialize DDP on NCCL
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
-
-    # create a CPU-only Gloo process group for gather-to-rank-0
-    gloo_group = dist.new_group(ranks=list(range(world_size)), backend='gloo')
-
     init_wandb(config)
 
     # 3) prepare dirs on rank 0
@@ -145,52 +141,42 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # ---- NEW: CPU‐based gather across all ranks via Gloo ----
+                # ---- NEW: NCCL‐based all_gather on GPU ----
 
-                # 1) convert your concatenated numpy arrays into GPU tensors (already done),
-                # then move to CPU
+                # 1) build your per‐rank tensors (already on GPU)
                 out_tensor = torch.tensor(
                     np.concatenate(all_out, axis=0),
-                    device=rank,
+                    device=rank
                 )
                 gt_tensor = torch.tensor(
                     np.concatenate(all_gt, axis=0),
-                    device=rank,
+                    device=rank
                 )
                 vid_tensor = torch.tensor(
                     np.array(all_vids),
                     device=rank,
-                    dtype=torch.long,
+                    dtype=torch.long
                 )
 
-                # move to CPU for gather
-                out_cpu = out_tensor.cpu()
-                gt_cpu  = gt_tensor.cpu()
-                vid_cpu = vid_tensor.cpu()
+                # 2) allocate gather buffers on every rank
+                outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
+                gts_gather = [torch.zeros_like(gt_tensor)  for _ in range(world_size)]
+                vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
 
-                # 2) allocate per-rank CPU buffers on rank 0
-                if rank == 0:
-                    outs_list = [torch.zeros_like(out_cpu) for _ in range(world_size)]
-                    gts_list  = [torch.zeros_like(gt_cpu)  for _ in range(world_size)]
-                    vids_list = [torch.zeros_like(vid_cpu) for _ in range(world_size)]
-                else:
-                    outs_list = None
-                    gts_list  = None
-                    vids_list = None
-
-                # sync before gather
+                # sync right before the collective
+                torch.cuda.synchronize(rank)
                 dist.barrier()
 
-                # 3) gather via Gloo group
-                dist.gather(out_cpu, outs_list, dst=0, group=gloo_group)
-                dist.gather(gt_cpu,  gts_list,  dst=0, group=gloo_group)
-                dist.gather(vid_cpu, vids_list, dst=0, group=gloo_group)
+                # 3) do the NCCL‐all_gather
+                dist.all_gather(outs_gather, out_tensor)
+                dist.all_gather(gts_gather,  gt_tensor)
+                dist.all_gather(vids_gather, vid_tensor)
 
-                # 4) only rank 0 flattens and computes metrics
+                # 4) only rank 0 stitches & computes metrics
                 if rank == 0:
-                    arr_out = torch.cat(outs_list, dim=0).numpy()
-                    arr_gt  = torch.cat(gts_list,  dim=0).numpy()
-                    arr_vid = torch.cat(vids_list, dim=0).numpy()
+                    arr_out = torch.cat(outs_gather, dim=0).cpu().numpy()
+                    arr_gt  = torch.cat(gts_gather,  dim=0).cpu().numpy()
+                    arr_vid = torch.cat(vids_gather, dim=0).cpu().numpy()
 
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
