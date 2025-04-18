@@ -57,12 +57,6 @@ def train(rank, world_size, config):
     torch.cuda.set_device(rank)
     init_wandb(config)
 
-    # decide whether to use CPU-object gather via Gloo based on env var
-    use_cpu_gather = os.environ.get("USE_CPU_GATHER", "0") == "1"
-    gather_group = None
-    if use_cpu_gather:
-        gather_group = dist.new_group(backend="gloo")
-
     # 3) prepare dirs on rank 0
     if rank == 0:
         os.makedirs(config.train.log_path, exist_ok=True)
@@ -142,7 +136,7 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                if use_cpu_gather:
+                if False:
                     # --- CPU object gather (Gloo) path ---
                     outs_list = [None] * world_size
                     gts_list  = [None] * world_size
