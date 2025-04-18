@@ -56,13 +56,9 @@ def train(rank, world_size, config):
     # 1) limit threads
     set_thread_limits(config.threads_per_rank)
 
-    # 2) init NCCL‐based DDP
+    # 2) initialize DDP on NCCL
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
-
-    # 2b) create a CPU/Gloo subgroup for object‐gather
-    gloo_group = dist.new_group(ranks=list(range(world_size)), backend='gloo')
-
     init_wandb(config)
 
     # 3) prepare dirs on rank 0
@@ -95,7 +91,7 @@ def train(rank, world_size, config):
         config, rank, world_size
     )
 
-    # --------- Training & Validation ----------
+    # ---------------- Training & Validation ----------------
     for epoch in range(config.train.resume_epoch, config.train.num_epochs):
         train_loader.sampler.set_epoch(epoch)
         trainer.module.configure_optimizers(effective_seg_count, epoch != 0)
@@ -115,11 +111,11 @@ def train(rank, world_size, config):
                 # **preserve this barrier** in the batch loop
                 dist.barrier()
 
-                # move inputs to GPU
+                # move tensors to GPU
                 for k, v in batch.items():
                     if k in ('audio_phonemes', 'text_phonemes'):
                         continue
-                    if isinstance(v, list) and v and torch.is_tensor(v[0]):
+                    if isinstance(v, list) and len(v) > 0 and torch.is_tensor(v[0]):
                         batch[k] = [x.to(rank) for x in v]
                     elif torch.is_tensor(v):
                         batch[k] = v.to(rank)
@@ -142,35 +138,58 @@ def train(rank, world_size, config):
                     )
                     trainer.module.save_model(trainer.module.state_dict(), ckpt)
 
-            # ---- end batch loop ----
+            # end batch loop
 
             if phase == 'val':
-                # ---- NEW: CPU‐side object all_gather via Gloo ----
+                # ---- NEW: point-to-point send/recv gather ----
 
-                # sync all ranks before collecting
+                # 1) build your per-rank tensors on GPU
+                out_tensor = torch.tensor(
+                    np.concatenate(all_out, axis=0),
+                    device=rank,
+                )
+                gt_tensor = torch.tensor(
+                    np.concatenate(all_gt, axis=0),
+                    device=rank,
+                )
+                vid_tensor = torch.tensor(
+                    np.array(all_vids),
+                    device=rank,
+                    dtype=torch.long,
+                )
+
+                # sync everyone here before send/recv
                 dist.barrier()
 
-                # prepare local Python objects
-                out_list = all_out       # list of numpy arrays [N_i × D]
-                gt_list  = all_gt        # same shape
-                vid_list = all_vids      # flat list of ints
-
-                # prepare receive buffers
-                gathered_out = [None] * world_size
-                gathered_gt  = [None] * world_size
-                gathered_vid = [None] * world_size
-
-                # all_gather_object on the Gloo subgroup
-                dist.all_gather_object(gathered_out, out_list, group=gloo_group)
-                dist.all_gather_object(gathered_gt,  gt_list,  group=gloo_group)
-                dist.all_gather_object(gathered_vid, vid_list, group=gloo_group)
-
-                # only rank 0 flattens and computes metrics
                 if rank == 0:
-                    # concatenate per‐rank lists of batch‐arrays
-                    arr_out = np.concatenate([np.concatenate(r, axis=0) for r in gathered_out], axis=0)
-                    arr_gt  = np.concatenate([np.concatenate(r, axis=0) for r in gathered_gt],  axis=0)
-                    arr_vid = np.concatenate(gathered_vid, axis=0)
+                    # prepare lists, stash own first
+                    outs_list = [torch.zeros_like(out_tensor) for _ in range(world_size)]
+                    gts_list  = [torch.zeros_like(gt_tensor)  for _ in range(world_size)]
+                    vids_list = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
+
+                    # slot 0 = this rank
+                    outs_list[0].copy_(out_tensor)
+                    gts_list[0].copy_(gt_tensor)
+                    vids_list[0].copy_(vid_tensor)
+
+                    # receive from each other rank
+                    for src in range(1, world_size):
+                        buf_o = torch.zeros_like(out_tensor)
+                        dist.recv(buf_o, src=src)
+                        outs_list[src] = buf_o
+
+                        buf_g = torch.zeros_like(gt_tensor)
+                        dist.recv(buf_g, src=src)
+                        gts_list[src] = buf_g
+
+                        buf_v = torch.zeros_like(vid_tensor)
+                        dist.recv(buf_v, src=src)
+                        vids_list[src] = buf_v
+
+                    # now stitch and compute metrics
+                    arr_out = torch.cat(outs_list, dim=0).cpu().numpy()
+                    arr_gt  = torch.cat(gts_list,  dim=0).cpu().numpy()
+                    arr_vid = torch.cat(vids_list, dim=0).cpu().numpy()
 
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
@@ -208,6 +227,11 @@ def train(rank, world_size, config):
                         os.path.join(config.train.log_path, f'metrics_{epoch}.npy'),
                         metrics_arr
                     )
+                else:
+                    # send ours to rank 0
+                    dist.send(out_tensor, dst=0)
+                    dist.send(gt_tensor,  dst=0)
+                    dist.send(vid_tensor, dst=0)
 
         # end phase loop
 
