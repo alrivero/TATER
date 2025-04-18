@@ -267,6 +267,8 @@ class CARAAffectTrainer(BaseTrainer):
         losses["Unique"] = len(affect_scores.unique())
         losses["A_avg"] = affect_scores[:, 0].mean()
         losses["V_avg"] = affect_scores[:, 1].mean()
+        losses["A_var"] = affect_scores[:, 0].var()
+        losses["V_var"] = affect_scores[:, 1].var()
 
         outputs = {}
 
