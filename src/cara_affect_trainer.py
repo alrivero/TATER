@@ -362,6 +362,7 @@ class CARAAffectTrainer(BaseTrainer):
 
             self.logging(batch_idx, losses, phase)
 
+        outputs['base_encode'] = encode_feat['base_encode']
         outputs["valence_arousal_out"] = affect_scores
         outputs["valence_arousal_gt"] = torch.cat([x[None] for x in batch["valence_arousal"]])
         return outputs
