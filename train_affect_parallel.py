@@ -157,16 +157,16 @@ def train(rank, world_size, config):
                     np.array(all_vids),
                     device=rank,
                     dtype=torch.long,
-                ).flatten()
+                )
 
                 # 2) allocate per-rank buffers
                 outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
                 gts_gather = [torch.zeros_like(gt_tensor) for _ in range(world_size)]
                 vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
 
-                print(out_tensor, [x.shape for x in out_tensor])
-                print(gt_tensor, [x.shape for x in gt_tensor])
-                print(vid_tensor, [x.shape for x in vid_tensor])
+                print(out_tensor.shape, [x.shape for x in outs_gather])
+                print(gt_tensor.shape, [x.shape for x in gts_gather])
+                print(vid_tensor.shape, [x.shape for x in vids_gather])
 
                 torch.cuda.synchronize(rank)
                 dist.barrier()
