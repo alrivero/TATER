@@ -992,7 +992,7 @@ def get_datasets_iHiTOP_parallel(config=None):
     # All ranks proceed after synchronization
     hdf5_file_paths = [os.path.join(config.dataset.iHiTOP.hdf5_path, file) for file in os.listdir(config.dataset.iHiTOP.hdf5_path)]
     train_idxs = np.load(config.dataset.iHiTOP.final_idxs_train)
-    val_idxs = np.load(config.dataset.iHiTOP.final_idxs_val)[-480:]
+    val_idxs = np.load(config.dataset.iHiTOP.final_idxs_val)[-1600:]
     test_idxs = np.load(config.dataset.iHiTOP.final_idxs_test)
 
     # train_mask = np.load(config.dataset.iHiTOP.final_mask_train).astype(bool)
