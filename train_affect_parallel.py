@@ -9,14 +9,9 @@ import numpy as np
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from src.cara_affect_trainer import CARAAffectTrainer
+from src.utils import metrics
 from datasets.data_utils import load_dataloaders_parallel
 from torch.distributed import get_rank, is_initialized
-from src.utils import metrics
-import traceback
-
-# If you see CUDA-in-fork hangs, uncomment the next two lines:
-# import torch.multiprocessing as mp
-# mp.set_start_method('spawn', force=True)
 
 def parse_args():
     conf = OmegaConf.load(sys.argv[1])
@@ -25,6 +20,8 @@ def parse_args():
     conf.merge_with_cli()
     if "threads_per_rank" not in conf:
         conf.threads_per_rank = 4
+    # Option to choose CPU‐object gather instead of GPU gather
+    conf.train.use_cpu_gather = getattr(conf.train, "use_cpu_gather", False)
     return conf
 
 def init_wandb(config):
@@ -60,6 +57,11 @@ def train(rank, world_size, config):
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
     init_wandb(config)
+
+    # If using CPU‐object gather, create a Gloo group
+    gather_group = None
+    if config.train.use_cpu_gather:
+        gather_group = dist.new_group(backend="gloo")
 
     # 3) prepare dirs on rank 0
     if rank == 0:
@@ -108,8 +110,7 @@ def train(rank, world_size, config):
                 position=rank,
                 leave=False
             )):
-                # **preserve this barrier** in the batch loop
-                dist.barrier()
+                # **per‐batch dist.barrier() removed**
 
                 # move tensors to GPU
                 for k, v in batch.items():
@@ -141,42 +142,59 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # ---- NEW: tensor-based gather across all ranks ----
+                if config.train.use_cpu_gather:
+                    # --- CPU object gather (Gloo) path ---
+                    outs_list = [None] * world_size
+                    gts_list  = [None] * world_size
+                    vids_list = [None] * world_size
 
-                # 1) convert your Python lists into GPU tensors
-                out_tensor = torch.tensor(
-                    np.concatenate(all_out, axis=0),
-                    device=rank,
-                )
-                gt_tensor = torch.tensor(
-                    np.concatenate(all_gt, axis=0),
-                    device=rank,
-                )
-                # assuming video_ID is integer; adjust dtype if needed
-                vid_tensor = torch.tensor(
-                    np.array(all_vids),
-                    device=rank,
-                    dtype=torch.long,
-                )
+                    dist.all_gather_object(outs_list, all_out, group=gather_group)
+                    dist.all_gather_object(gts_list,  all_gt,  group=gather_group)
+                    dist.all_gather_object(vids_list, all_vids, group=gather_group)
 
-                # 2) allocate per-rank buffers
-                outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
-                gts_gather = [torch.zeros_like(gt_tensor) for _ in range(world_size)]
-                vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
+                    if rank == 0:
+                        arr_out = np.concatenate([np.concatenate(x, axis=0) for x in outs_list], axis=0)
+                        arr_gt  = np.concatenate([np.concatenate(x, axis=0) for x in gts_list],  axis=0)
+                        arr_vid = np.concatenate(vids_list, axis=0)
+                else:
+                    # --- GPU NCCL gather path with single sync+barrier ---
+                    out_tensor = torch.tensor(
+                        np.concatenate(all_out, axis=0),
+                        device=rank,
+                    )
+                    gt_tensor = torch.tensor(
+                        np.concatenate(all_gt, axis=0),
+                        device=rank,
+                    )
+                    vid_tensor = torch.tensor(
+                        np.array(all_vids),
+                        device=rank,
+                        dtype=torch.long,
+                    )
 
-                # 3) do NCCL-safe all_gather on each field
-                dist.all_gather(outs_gather, out_tensor)
-                dist.all_gather(gts_gather,  gt_tensor)
-                dist.all_gather(vids_gather, vid_tensor)
+                    # ensure all kernels finished, then sync ranks
+                    torch.cuda.synchronize(rank)
+                    dist.barrier()
 
-                # 4) only rank 0 flattens and computes metrics
+                    # now safe to do NCCL all_gather
+                    outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
+                    gts_gather  = [torch.zeros_like(gt_tensor)  for _ in range(world_size)]
+                    vids_gather = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
+
+                    dist.all_gather(outs_gather, out_tensor)
+                    dist.all_gather(gts_gather,  gt_tensor)
+                    dist.all_gather(vids_gather, vid_tensor)
+
+                    if rank == 0:
+                        arr_out = torch.cat(outs_gather, dim=0).cpu().numpy()
+                        arr_gt  = torch.cat(gts_gather,  dim=0).cpu().numpy()
+                        arr_vid = torch.cat(vids_gather, dim=0).cpu().numpy()
+
+                # only rank 0 computes metrics
                 if rank == 0:
-                    arr_out = torch.cat(outs_gather, dim=0).cpu().numpy()
-                    arr_gt  = torch.cat(gts_gather,  dim=0).cpu().numpy()
-                    arr_vid = torch.cat(vids_gather, dim=0).cpu().numpy()
-
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
+                    vids_u = np.unique(arr_vid)
 
                     for i in range(n_dims):
                         mse   = float(np.mean((arr_out[:,i] - arr_gt[:,i])**2))
@@ -184,9 +202,9 @@ def train(rank, world_size, config):
                         p_all = float(metrics.pearson_p(arr_out[:,i], arr_gt[:,i]))
                         metrics_out += [mse, r_all, p_all]
 
-                        vids_u = np.unique(arr_vid)
+                        # within‐video
                         r_w, p_w, nan_c = 0.0, 0.0, 0
-                        for vid in tqdm(vids_u, desc=f"Dim {i} within-video", leave=False):
+                        for vid in vids_u:
                             mask = (arr_vid == vid)
                             rv = metrics.pearson_r(arr_out[mask,i], arr_gt[mask,i])
                             pv = metrics.pearson_p(arr_out[mask,i], arr_gt[mask,i])
@@ -199,6 +217,7 @@ def train(rank, world_size, config):
                             r_w /= valid; p_w /= valid
                         metrics_out += [r_w, p_w]
 
+                        # between‐video
                         avg_o = np.array([arr_out[arr_vid==v,i].mean() for v in vids_u])
                         avg_g = np.array([arr_gt[arr_vid==v,i].mean() for v in vids_u])
                         r_b = float(metrics.pearson_r(avg_o, avg_g))
