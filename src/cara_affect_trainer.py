@@ -22,6 +22,7 @@ class CARAAffectTrainer(BaseTrainer):
         )
         self.affect_decoder = AffectDecoder(config)
         self.MSELoss = nn.MSELoss()
+        self.HuberLoss = nn.SmoothL1Loss(beta=1.0)
 
         self.token_masking = self.config.train.token_masking
         self.masking_rate = self.config.train.masking_rate
@@ -248,9 +249,11 @@ class CARAAffectTrainer(BaseTrainer):
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
         affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]])
-        loss = self.MSELoss(affect_scores, affect_scores_gt)
         
-        losses['MSE'] = loss
+        mse = self.MSELoss(affect_scores, affect_scores_gt)
+        huber = self.HuberLoss(affect_scores, affect_scores_gt)
+
+        loss = huber
 
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
         p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
@@ -259,6 +262,9 @@ class CARAAffectTrainer(BaseTrainer):
         losses["Pearson r A"] = r_a
         losses["p-value V"] = p_v
         losses["p-value A"] = p_a
+        losses["MSE"] = mse
+        losses["Huber"] = huber
+        losses["Unique"] = len(affect_scores.unique())
 
         outputs = {}
 
