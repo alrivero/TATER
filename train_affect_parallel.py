@@ -148,7 +148,7 @@ def train(rank, world_size, config):
                 # 1) turn lists into numpy arrays
                 local_out = np.concatenate(all_out, axis=0)      # shape [N_i, D]
                 local_gt  = np.concatenate(all_gt,  axis=0)
-                local_vid = np.array(all_vids, dtype=np.int64)   # shape [N_i]
+                local_vid = np.array(all_vids, dtype=np.int64).flatten()   # shape [N_i]
 
                 print("Starting")
 
