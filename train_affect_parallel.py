@@ -56,7 +56,7 @@ def train(rank, world_size, config):
     # 1) limit threads
     set_thread_limits(config.threads_per_rank)
 
-    # 2) initialize DDP on NCCL
+    # 2) initialize DDP
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
     init_wandb(config)
@@ -66,12 +66,14 @@ def train(rank, world_size, config):
         os.makedirs(config.train.log_path, exist_ok=True)
         os.makedirs(os.path.join(config.train.log_path, 'train_images'), exist_ok=True)
         os.makedirs(os.path.join(config.train.log_path, 'val_images'), exist_ok=True)
+        # directory for shard files
+        os.makedirs(os.path.join(config.train.log_path, 'val_shards'), exist_ok=True)
         OmegaConf.save(config, os.path.join(config.train.log_path, 'config.yaml'))
 
     # 4) sync before model
     dist.barrier()
 
-    # 5) build model & wrap
+    # 5) build model & DDP wrap
     trainer = CARAAffectTrainer(config).to(rank)
     trainer.device = rank
     trainer.tater.device = rank
@@ -141,56 +143,37 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # ---- NEW: point-to-point send/recv gather ----
+                # ---- NEW: shard to disk + gather via filesystem ----
 
-                # 1) build your per-rank tensors on GPU
-                out_tensor = torch.tensor(
-                    np.concatenate(all_out, axis=0),
-                    device=rank,
-                )
-                gt_tensor = torch.tensor(
-                    np.concatenate(all_gt, axis=0),
-                    device=rank,
-                )
-                vid_tensor = torch.tensor(
-                    np.array(all_vids),
-                    device=rank,
-                    dtype=torch.long,
-                )
+                # 1) turn lists into numpy arrays
+                local_out = np.concatenate(all_out, axis=0)      # shape [N_i, D]
+                local_gt  = np.concatenate(all_gt,  axis=0)
+                local_vid = np.array(all_vids, dtype=np.int64)   # shape [N_i]
 
-                # sync everyone here before send/recv
+                # 2) write out this rank's shard
+                shard_dir = os.path.join(config.train.log_path, "val_shards")
+                os.makedirs(shard_dir, exist_ok=True)
+                shard_path = os.path.join(shard_dir, f"epoch{epoch}_rank{rank}.npz")
+                np.savez(shard_path, out=local_out, gt=local_gt, vid=local_vid)
+
+                # 3) sync so all shards are written
                 dist.barrier()
 
+                # 4) rank 0 reads & processes all shards
                 if rank == 0:
-                    # prepare lists, stash own first
-                    outs_list = [torch.zeros_like(out_tensor) for _ in range(world_size)]
-                    gts_list  = [torch.zeros_like(gt_tensor)  for _ in range(world_size)]
-                    vids_list = [torch.zeros_like(vid_tensor) for _ in range(world_size)]
+                    files = sorted(f for f in os.listdir(shard_dir) if f.endswith(".npz"))
+                    outs_list, gts_list, vids_list = [], [], []
+                    for fname in files:
+                        data = np.load(os.path.join(shard_dir, fname))
+                        outs_list.append(data["out"])
+                        gts_list.append(data["gt"])
+                        vids_list.append(data["vid"])
 
-                    # slot 0 = this rank
-                    outs_list[0].copy_(out_tensor)
-                    gts_list[0].copy_(gt_tensor)
-                    vids_list[0].copy_(vid_tensor)
+                    arr_out = np.concatenate(outs_list, axis=0)
+                    arr_gt  = np.concatenate(gts_list,  axis=0)
+                    arr_vid = np.concatenate(vids_list, axis=0)
 
-                    # receive from each other rank
-                    for src in range(1, world_size):
-                        buf_o = torch.zeros_like(out_tensor)
-                        dist.recv(buf_o, src=src)
-                        outs_list[src] = buf_o
-
-                        buf_g = torch.zeros_like(gt_tensor)
-                        dist.recv(buf_g, src=src)
-                        gts_list[src] = buf_g
-
-                        buf_v = torch.zeros_like(vid_tensor)
-                        dist.recv(buf_v, src=src)
-                        vids_list[src] = buf_v
-
-                    # now stitch and compute metrics
-                    arr_out = torch.cat(outs_list, dim=0).cpu().numpy()
-                    arr_gt  = torch.cat(gts_list,  dim=0).cpu().numpy()
-                    arr_vid = torch.cat(vids_list, dim=0).cpu().numpy()
-
+                    # compute metrics as before
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
 
@@ -227,11 +210,10 @@ def train(rank, world_size, config):
                         os.path.join(config.train.log_path, f'metrics_{epoch}.npy'),
                         metrics_arr
                     )
-                else:
-                    # send ours to rank 0
-                    dist.send(out_tensor, dst=0)
-                    dist.send(gt_tensor,  dst=0)
-                    dist.send(vid_tensor, dst=0)
+
+                    # 5) clean up shard files
+                    for fname in files:
+                        os.remove(os.path.join(shard_dir, fname))
 
         # end phase loop
 
