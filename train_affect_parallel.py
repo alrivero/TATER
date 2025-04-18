@@ -136,7 +136,11 @@ def train(rank, world_size, config):
                     if rank == 0 and batch_idx % 1 == 0:
                         print(out['valence_arousal_out'])
                         print(out['grad_norm_total'])
-                        print(out['base_encode'].std(dim=1), out['base_encode'].mean(dim=1))
+                        print(
+                            out['base_encode'].std(dim=1),
+                            out['base_encode'].std(dim=1).shape,
+                            out['base_encode'].mean(dim=1),
+                            out['base_encode'].mean(dim=1).shape)
                 except Exception as e:
                     if rank == 0:
                         print(f"Error loading batch_idx {batch_idx}!")
