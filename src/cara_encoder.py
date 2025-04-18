@@ -60,6 +60,7 @@ class CARAEncoder(TATEREncoder):
         
         outputs["exp_residual_out"] = exp_residual_out
         outputs["exp_class"] = exp_class.reshape(len(img_batch), -1)
+        outputs["base_encode"] = exp_encodings_all
     
         return outputs
 
