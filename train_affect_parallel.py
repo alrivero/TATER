@@ -150,11 +150,15 @@ def train(rank, world_size, config):
                 local_gt  = np.concatenate(all_gt,  axis=0)
                 local_vid = np.array(all_vids, dtype=np.int64)   # shape [N_i]
 
+                print("Starting")
+
                 # 2) write out this rank's shard
                 shard_dir = os.path.join(config.train.log_path, "val_shards")
                 os.makedirs(shard_dir, exist_ok=True)
                 shard_path = os.path.join(shard_dir, f"epoch{epoch}_rank{rank}.npz")
                 np.savez(shard_path, out=local_out, gt=local_gt, vid=local_vid)
+
+                print("HERE")
 
                 # 3) sync so all shards are written
                 dist.barrier()
@@ -168,6 +172,8 @@ def train(rank, world_size, config):
                         outs_list.append(data["out"])
                         gts_list.append(data["gt"])
                         vids_list.append(data["vid"])
+
+                    print("sorted")
 
                     arr_out = np.concatenate(outs_list, axis=0)
                     arr_gt  = np.concatenate(gts_list,  axis=0)
