@@ -228,7 +228,6 @@ class CrossAttentionTransformer(nn.Module):
 
         if attention_mask is not None:
             attention_mask = pad(attention_mask, (0, 1), mode="constant", value=False)
-            attention_mask = attention_mask.transpose(0, 1)
 
         # Pass through transformer layers without cross attention
         for i in range(self.encode_layers):
