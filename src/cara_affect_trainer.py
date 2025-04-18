@@ -2,6 +2,7 @@ import random
 import torch
 import wandb
 import copy
+import itertools
 import src.utils.utils as utils
 import scipy.stats
 
@@ -331,6 +332,19 @@ class CARAAffectTrainer(BaseTrainer):
         if phase == 'train':
             self.optimizers_zero_grad()  # Zero the gradients
             loss.backward()  # Accumulate gradients
+
+            # ——— NEW: compute gradient norms ———
+            total_norm_sq = 0.0
+            # iterate over all parameters you care about
+            for p in itertools.chain(self.tater.parameters(), self.affect_decoder.parameters()):
+                if p.grad is not None:
+                    # L2 norm of this param's gradient
+                    param_norm = p.grad.data.norm(2)
+                    total_norm_sq += param_norm.item() ** 2
+            total_grad_norm = total_norm_sq ** 0.5
+            # stick it into outputs for logging/printing downstream
+            outputs['grad_norm_total'] = total_grad_norm
+            # ————————————————————————————————
             
             if (batch_idx + 1) % self.accumulate_steps == 0:
                 self.optimizers_step(step_encoder=True, step_fuse_generator=True)  # Apply accumulated gradients
