@@ -1,0 +1,13 @@
+load_path: "/home/arivero/stylegan-v-checkpoint-ffs-023846.pkl"
+discriminator:
+  sampling:
+    name: CARA
+    fps: 25
+    max_num_frames: 1024
+    num_frames_per_video: 3
+    type: "random"
+    total_dists: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+    max_dist: 32
+  concat_res: 16 # The resolution at which we concatenate frames
+  num_frames_div_factor: 2 # Divide the channel dimensionality by `num_frames_div_factor`
+  dummy_c: false # Multiply the conditioning vector by 0.0 for ablation purposes

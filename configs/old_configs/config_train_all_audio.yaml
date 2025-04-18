@@ -1,0 +1,242 @@
+resume:
+load_encoder: True
+load_fuse_generator: True
+device: cuda:0
+image_size: 224
+K: 1 # temporal sequence length - no temporal data used here
+deterministic: False
+seed: 13809409134
+
+train:
+
+  lr: 5e-5
+  min_lr: 1e-5
+  max_lr: 5e-5
+  iterations_until_max_lr: 60000
+  num_epochs: 10
+  batch_size: 1
+  accumulate_steps: 5
+  num_workers: 2 # Using multiprocessing in Dataset
+  log_path: logs/train_exp_latent_w_phoneme_all_pretrain_shape_pose_v7
+  log_losses_every: 10
+  visualize_every: 50
+  mask_ratio: 0.01  # % pixel to be retained inside the face mask
+  mask_dilation_radius: 10 # dilation of the initial face mask
+  save_every: 10000 # save model every n epochs
+  use_wandb: False
+  Ke: 1 # number of repeated frames for 2nd cycle path
+  # samples_per_epoch: 354178 # Max Cull 430095 # Culled 472033 DEPRECATED
+  use_base_model_for_regularization: True  # use the base model for regularization - when False the regularization is wrt zero
+  resume_epoch: 0
+  train_scale_min: 1.2  # min scale for data augmentation during training
+  train_scale_max: 1.8 # max scale for data augmentation during training
+  stored_scale: 2.2 # scale at which images were stored in
+  test_scale: 1.6 # fixed scale for testing
+  enable_residual_scaling: False
+  initial_residual_scale: 1e-3
+  max_res_scale_iterations: 15000
+  residual_schedule: "cosine"
+  use_one_cycle_lr: True
+  max_batch_len: 120
+  split_overlap: 5
+
+  loss_weights:
+    landmark_loss: 500.0   # landmark loss weight
+    perceptual_vgg_loss: 10.0  # RECONSTRUCTION - perceptual vgg loss weight
+    reconstruction_loss: 100.0  # RECONSTRUCTION - l1 loss weight
+    emotion_loss: 0.0  # extra emotion loss weight 
+    jaw_regularization: 100.0
+    eyelid_regularization: 100.0
+    expression_regularization: 500.0
+    shape_regularization: 100.0
+    pose_regularization: 100.0
+    cam_regularization: 100.0
+    exp_res_regularization: 0.0
+    shape_res_regularization: 0.0
+    pose_res_regularization: 0.0
+    cycle_loss: 1.0  # CYCLE loss
+    mica_loss: 0.0
+    landmark_mouth_dist_loss: 10.0
+    mouth_vgg_loss: 1.0
+    phoneme_loss: 1.0
+    velocity_loss: 0.0
+
+  optimize_base_pose: False
+  optimize_base_shape: False
+  optimize_base_expression: False  # Do not optimize original network
+  optimize_tater: True
+  optimize_generator: True
+  optimize_phoneme_classifier: True
+
+  # automatically tunable hyperparameters - just declared here
+  freeze_encoder_in_second_path: False
+  freeze_generator_in_second_path: False
+
+# architectural details - backbones and number of FLAME components
+arch:
+  backbone_pose: tf_mobilenetv3_small_minimal_100    
+  backbone_shape: tf_mobilenetv3_large_minimal_100
+  backbone_expression: tf_mobilenetv3_large_minimal_100
+  num_expression: 50 
+  num_shape: 300 # same as MICA
+  use_eyelids: True
+  enable_fuse_generator: True 
+
+  TATER:
+    interp_down_residual: False
+    use_interp_linear_layer: False
+    downsample_rate: 3
+    apply_linear_after_res: False
+
+    Expression:
+      use_base_encoder: False
+      use_linear: True
+      use_latent: True
+      use_audio: True
+      add_to_flame: True
+      linear_size: 960
+      init_near_zero: True
+      init_scale: 1e-9
+      pretrain_path: "/local/PTSD_STOP/TATER/logs/train_exp_latent_v6/model_10000.pt"
+
+      CrossAttentionTransformer:
+        positional_embedding: "Sinusoidal"
+        num_layers: 3
+
+        final_dropout:
+          enable: False
+          prob: 0.1
+        
+        attention:
+          d_model_1: 960
+          d_model_2: 1024
+          dim_feedforward_1: 1920
+          dim_feedforward_2: 2048
+
+          num_attention_heads: 2
+          dropout: 0.1
+
+          layer_norm_eps: 1e-12
+
+    Shape:
+      use_base_encoder: False
+      use_linear: True
+      use_latent: True
+      add_to_flame: True
+      linear_size: 960
+      init_near_zero: True
+      init_scale: 1e-9
+      pretrain_path: "/local/PTSD_STOP/TATER/logs/train_shape_pose_v2/model_20000.pt"
+
+      Transformer:
+        positional_embedding: "Sinusoidal"
+        num_layers: 3
+
+        final_dropout:
+          enable: False
+          prob: 0.1
+        
+        attention:
+          hidden_size: 960
+          hidden_size_2: 1920
+          num_attention_heads: 2
+          attention_probs_dropout_prob: 0.1
+
+          layer_norm_eps: 1e-12
+
+    Pose:
+      use_base_encoder: False
+      use_linear: True
+      use_latent: True
+      add_to_flame: True
+      linear_size: 576
+      init_near_zero: True
+      init_scale: 1e-9
+      pretrain_path: "/local/PTSD_STOP/TATER/logs/train_shape_pose_v2/model_20000.pt"
+
+      Transformer:
+        positional_embedding: "Sinusoidal"
+        num_layers: 3
+
+        final_dropout:
+          enable: False
+          prob: 0.1
+        
+        attention:
+          hidden_size: 576
+          hidden_size_2: 1152
+          num_attention_heads: 2
+          attention_probs_dropout_prob: 0.1
+
+          layer_norm_eps: 1e-12
+
+    text_emb_size: 768
+
+  Phoneme_Classifier:
+    enable: True
+    type: "Linear"
+    use_latent: True
+    Transformer:
+          positional_embedding: "Sinusoidal"
+          num_layers: 2
+
+          final_dropout:
+            enable: False
+            prob: 0.1
+          
+          attention:
+            hidden_size: 56
+            hidden_size_2: 112
+            num_attention_heads: 2
+            attention_probs_dropout_prob: 0.1
+
+            layer_norm_eps: 1e-12
+
+
+render:
+  full_head: False  # full FLAME rendering
+
+dataset:
+  iHiTOP:
+    hdf5_path: /local/PTSD_STOP/iHiTOP_Preprocessed/test/
+    frame_step: 1
+
+    # Data culling parameters
+    removed_frames_threshold: 0.15
+    max_seg_len: 9999999
+    min_seg_len: 9
+    data_idxs: /local/PTSD_STOP/TATER/data_idxs/all_data_idxs_F1.npy
+    all_seg_idxs: /local/PTSD_STOP/TATER/data_idxs/all_seg_idxs_F1.npy
+    effective_seg_count: /local/PTSD_STOP/TATER/data_idxs/all_data_count_F1.npy
+    final_idxs: /local/PTSD_STOP/TATER/final_idxs/all_final_idxs_F1.npy
+    bad_files: /local/PTSD_STOP/TATER/final_idxs/all_bad_F1.npy
+
+    # percentage of data to use for train val test
+    train_percentage: 1.0
+    val_percentage: 0.0
+    test_percentage: 0.0
+
+  VOCASET:
+    data_path: /home/arivero/VOCA
+    frame_step: 1
+
+    # Data culling parameters
+    removed_frames_threshold: 0.15
+    max_seg_len: 9999999
+    min_seg_len: 9
+    final_idxs: /local/PTSD_STOP/TATER/final_idxs/all_final_idxs_VOCASET.npy
+
+    # percentage of data to use for train val test
+    train_percentage: 1.0
+    val_percentage: 0.0
+    test_percentage: 0.0
+
+  # percentage of data to use for each dataset
+  LRS3_percentage: 0.0
+  LRS3_temporal_sampling: False
+  MEAD_percentage: 1.0
+  FFHQ_percentage: 0.0 
+  CelebA_percentage: 0.0 
+  MEAD_sides_percentage: 0.0
+  sample_full_video_for_testing: False
+
