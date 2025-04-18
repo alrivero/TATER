@@ -157,7 +157,7 @@ def train(rank, world_size, config):
                     np.array(all_vids),
                     device=rank,
                     dtype=torch.long,
-                )
+                ).flatten()
 
                 # 2) allocate per-rank buffers
                 outs_gather = [torch.zeros_like(out_tensor) for _ in range(world_size)]
