@@ -113,27 +113,34 @@ def train(rank, world_size, config):
                 # **preserve this barrier** in the batch loop
                 dist.barrier()
 
-                # move tensors to GPU
-                for k, v in batch.items():
-                    if k in ('audio_phonemes', 'text_phonemes'):
-                        continue
-                    if isinstance(v, list) and len(v) > 0 and torch.is_tensor(v[0]):
-                        batch[k] = [x.to(rank) for x in v]
-                    elif torch.is_tensor(v):
-                        batch[k] = v.to(rank)
+                try:
+                    # move tensors to GPU
+                    for k, v in batch.items():
+                        if k in ('audio_phonemes', 'text_phonemes'):
+                            continue
+                        if isinstance(v, list) and len(v) > 0 and torch.is_tensor(v[0]):
+                            batch[k] = [x.to(rank) for x in v]
+                        elif torch.is_tensor(v):
+                            batch[k] = v.to(rank)
 
-                out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
+                    out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
 
-                if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
-                    wandb.log({'epoch': epoch, 'batch_idx': batch_idx})
+                    if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
+                        wandb.log({'epoch': epoch, 'batch_idx': batch_idx})
 
-                if phase == 'val':
-                    all_out.append(out['valence_arousal_out'].detach().cpu().numpy())
-                    all_gt.append(out['valence_arousal_gt'].detach().cpu().numpy())
-                    all_vids.extend(batch['video_ID'])
+                    if phase == 'val':
+                        all_out.append(out['valence_arousal_out'].detach().cpu().numpy())
+                        all_gt.append(out['valence_arousal_gt'].detach().cpu().numpy())
+                        all_vids.extend(batch['video_ID'])
 
-                if rank == 0 and batch_idx % 10:
-                    print(out['valence_arousal_out'])
+                    if rank == 0 and batch_idx % 5 == 0:
+                        print(out['valence_arousal_out'])
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Error loading batch_idx {batch_idx}!")
+                        error_message = traceback.format_exc()
+                        print(f"Error captured: {error_message}")
+                        print(e)
 
                 if phase == 'train' and rank == 0 and (
                     batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1
