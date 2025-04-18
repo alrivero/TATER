@@ -124,7 +124,8 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_1,
                 dropout=dropout,
-                activation=activation_fn
+                activation=activation_fn,
+                batch_first=True
             )
             for _ in range(self.encode_layers)
         ])
@@ -134,7 +135,8 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_2,
                 dropout=dropout,
-                activation=activation_fn
+                activation=activation_fn,
+                batch_first=True
             )
             for _ in range(self.encode_layers)
         ])
@@ -145,7 +147,8 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_1,
                 dropout=dropout,
-                activation=activation_fn
+                activation=activation_fn,
+                batch_first=True
             )
             for _ in range(self.cross_layers)
         ])
@@ -156,7 +159,8 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_2,
                 dropout=dropout,
-                activation=activation_fn
+                activation=activation_fn,
+                batch_first=True
             )
             for _ in range(self.cross_layers)
         ])
