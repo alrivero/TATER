@@ -172,7 +172,7 @@ arch:
     text_emb_size: 768
 
     Affect_Decoder:
-        linear_size: 640
+        linear_size: 320
   Phoneme_Classifier:
     enable: false
     type: Linear
