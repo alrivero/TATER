@@ -252,33 +252,83 @@ class CARAAffectTrainer(BaseTrainer):
             _, p = scipy.stats.pearsonr(x_np, y_np)
             p_vals.append(p)
         return torch.tensor(p_vals)
+    
+    def relative_performance(self, pred, gt):
+        """
+        Compute relative performance metrics between predicted and ground-truth scores.
+        
+        Args:
+            pred (torch.Tensor): Predicted scores, shape (B, N)
+            gt (torch.Tensor): Ground-truth scores, shape (B, N)
+        
+        Returns:
+            dict: Containing MSE, RMSE, R2, NRMSE_range, and NRMSE_std.
+        """
+        # Flatten both tensors into shape (B*N,)
+        pred_flat = pred.view(-1)
+        gt_flat = gt.view(-1)
 
+        # MSE
+        mse = torch.mean((pred_flat - gt_flat) ** 2)
+        # RMSE
+        rmse = torch.sqrt(mse)
+        # Variance of ground truth
+        var_gt = torch.var(gt_flat, unbiased=False)
+        # R-squared
+        r2 = 1 - mse / var_gt
+        # NRMSE normalized by range
+        range_gt = torch.max(gt_flat) - torch.min(gt_flat)
+        nrmse_range = rmse / range_gt
+        # NRMSE normalized by standard deviation
+        std_gt = torch.sqrt(var_gt)
+        nrmse_std = rmse / std_gt
+
+        return {
+            'mse': mse.item(),
+            'rmse': rmse.item(),
+            'r2': r2.item(),
+            'nrmse_range': nrmse_range.item(),
+            'nrmse_std': nrmse_std.item()
+        }
+    
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
-        affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]])
-        
+        # Stack ground-truth valence-arousal into (B, N)
+        affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]], dim=0)
+
+        # Compute primary losses
         mse = self.MSELoss(affect_scores, affect_scores_gt)
         huber = self.HuberLoss(affect_scores, affect_scores_gt)
 
+        # Decide training loss
         loss = mse
 
+        # Pearson metrics
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
         p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
 
+        # Populate basic metrics
         losses["Pearson r V"] = r_v
         losses["Pearson r A"] = r_a
-        losses["p-value V"] = p_v
-        losses["p-value A"] = p_a
-        losses["MSE"] = mse
-        losses["Huber"] = huber
-        losses["Unique"] = len(affect_scores.unique())
-        losses["A_avg"] = affect_scores[:, 0].mean()
-        losses["V_avg"] = affect_scores[:, 1].mean()
-        losses["A_var"] = affect_scores[:, 0].var()
-        losses["V_var"] = affect_scores[:, 1].var()
+        losses["p-value V"]  = p_v
+        losses["p-value A"]  = p_a
+        losses["MSE"]         = mse
+        losses["Huber"]       = huber
+        losses["Unique"]      = len(torch.unique(affect_scores))
+        losses["A_avg"]       = affect_scores[:, 0].mean()
+        losses["V_avg"]       = affect_scores[:, 1].mean()
+        losses["A_var"]       = affect_scores[:, 0].var(unbiased=False)
+        losses["V_var"]       = affect_scores[:, 1].var(unbiased=False)
+
+        # Add relative performance metrics (not used for backprop)
+        rel = self.relative_performance(affect_scores, affect_scores_gt)
+        losses["Rel MSE"]         = rel['mse']
+        losses["Rel RMSE"]        = rel['rmse']
+        losses["Rel R2"]          = rel['r2']
+        losses["Rel NRMSE_range"] = rel['nrmse_range']
+        losses["Rel NRMSE_std"]   = rel['nrmse_std']
 
         outputs = {}
-
         return outputs, losses, loss
     
     def create_base_encoder(self):
