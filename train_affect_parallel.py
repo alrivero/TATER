@@ -135,6 +135,7 @@ def train(rank, world_size, config):
 
                     if rank == 0 and batch_idx % 5 == 0:
                         print(out['valence_arousal_out'])
+                        print(out['valence_arousal_gt'])
                         # print(out['grad_norm_total'])
                         # # print(
                         # #     out['base_encode'].std(dim=1),
