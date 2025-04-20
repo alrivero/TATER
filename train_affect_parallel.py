@@ -98,7 +98,7 @@ def train(rank, world_size, config):
         train_loader.sampler.set_epoch(epoch)
         trainer.module.configure_optimizers(effective_seg_count, epoch != 0)
 
-        for phase in ('train', 'val'):
+        for phase in ('val', 'train'):
             loader = val_loader if phase == 'val' else train_loader
 
             if phase == 'val':
