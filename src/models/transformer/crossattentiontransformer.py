@@ -13,7 +13,7 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         dropout: float = 0.1,
         activation: Callable[[Tensor], Tensor] = nn.ReLU(),
         layer_norm_eps: float = 1e-5,
-        batch_first: bool = False,
+        batch_first: bool = True,
         norm_first: bool = False,
         bias: bool = True,
         device=None,
@@ -55,14 +55,23 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         src_mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
     ) -> Tensor:
-        src2 = self.self_attn(
-            query=src,
-            key=src,
-            value=src,
-            attn_mask=src_mask,
-            key_padding_mask=src_key_padding_mask,
-        )[0]
-        return src + self.dropout1(src2) if self.norm_first else self.norm1(src + self.dropout1(src2))
+        # Pre-norm: normalize first, then do attention + residual
+        if self.norm_first:
+            y = self.norm1(src)
+            attn_out = self.self_attn(
+                query=y, key=y, value=y,
+                attn_mask=src_mask,
+                key_padding_mask=src_key_padding_mask
+            )[0]
+            return src + self.dropout1(attn_out)
+        # Post-norm: attention + residual, then normalize
+        else:
+            attn_out = self.self_attn(
+                query=src, key=src, value=src,
+                attn_mask=src_mask,
+                key_padding_mask=src_key_padding_mask
+            )[0]
+            return self.norm1(src + self.dropout1(attn_out))
 
     def forward_cross_attention(
         self,
@@ -71,22 +80,30 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         memory_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None,
     ) -> Tensor:
-        assert not torch.isnan(src).any(), "NaN detected in 'src' input!"
-        assert not torch.isnan(memory).any(), "NaN detected in 'memory' input!"
-
-        src2 = self.cross_attn(
-            query=src,
-            key=memory,
-            value=memory,
-            attn_mask=memory_mask,
-            key_padding_mask=memory_key_padding_mask,
-        )[0]
-        return src + self.dropout2(src2) if self.norm_first else self.norm2(src + self.dropout2(src2))
+        if self.norm_first:
+            y = self.norm2(src)
+            attn_out = self.cross_attn(
+                query=y, key=memory, value=memory,
+                attn_mask=memory_mask,
+                key_padding_mask=memory_key_padding_mask
+            )[0]
+            return src + self.dropout2(attn_out)
+        else:
+            attn_out = self.cross_attn(
+                query=src, key=memory, value=memory,
+                attn_mask=memory_mask,
+                key_padding_mask=memory_key_padding_mask
+            )[0]
+            return self.norm2(src + self.dropout2(attn_out))
 
     def forward_feedforward(self, src: Tensor) -> Tensor:
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        return src + self.dropout3(src2) if self.norm_first else self.norm3(src + self.dropout3(src2))
-
+        if self.norm_first:
+            y = self.norm3(src)
+            ff = self.linear2(self.dropout(self.activation(self.linear1(y))))
+            return src + self.dropout3(ff)
+        else:
+            ff = self.linear2(self.dropout(self.activation(self.linear1(src))))
+            return self.norm3(src + self.dropout3(ff))
 
 class CrossAttentionTransformer(nn.Module):
     def __init__(self, conf):
@@ -124,6 +141,7 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_1,
                 dropout=dropout,
+                batch_first=True,
                 activation=activation_fn
             )
             for _ in range(self.encode_layers)
@@ -134,6 +152,7 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_2,
                 dropout=dropout,
+                batch_first=True,
                 activation=activation_fn
             )
             for _ in range(self.encode_layers)
@@ -145,6 +164,7 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_1,
                 dropout=dropout,
+                batch_first=True,
                 activation=activation_fn
             )
             for _ in range(self.cross_layers)
@@ -156,6 +176,7 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_2,
                 dropout=dropout,
+                batch_first=True,
                 activation=activation_fn
             )
             for _ in range(self.cross_layers)
@@ -167,6 +188,7 @@ class CrossAttentionTransformer(nn.Module):
                 nhead=nhead,
                 dim_feedforward=dim_feedforward_C,
                 dropout=dropout,
+                batch_first=True,
                 activation=activation_fn
             )
             for _ in range(self.concat_layers)
@@ -223,7 +245,6 @@ class CrossAttentionTransformer(nn.Module):
 
         if attention_mask is not None:
             attention_mask = pad(attention_mask, (0, 1), mode="constant", value=False)
-            attention_mask = attention_mask.transpose(0, 1)
 
         # Pass through transformer layers without cross attention
         for i in range(self.encode_layers):
@@ -254,8 +275,8 @@ class CrossAttentionTransformer(nn.Module):
             x = self.concat_layers[i](x, src_key_padding_mask=attention_mask)
 
         if self.final_dropout is not None:
-            x[:, :-1, :] = self.final_dropout(x[:, :-1, :])
-            x1_residual[:, :-1, :] = self.final_dropout(x1_residual[:, :-1, :])
+            x = self.final_dropout(x)                
+            x1_residual = self.final_dropout(x1_residual)
 
         return x[:, :-1, :], x[:, -1:, :], x1_residual[:, :-1, :], x1_residual[:, -1:, :]
 
