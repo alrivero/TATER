@@ -657,18 +657,6 @@ if __name__ == '__main__':
                 tater.device
             )
 
-            phoneme_embed = get_phoneme_embed(
-                batch["audio"][audio_start: audio_start + audio_sampled].float().mean(dim=-1).int(),
-                phoneme_model,
-                phoneme_processor,
-                phoneme_map,
-                frames_sampled,
-                duration_in_sec,
-                sample_rate,
-                fps,
-                tater.device
-            )
-
             if FACE_CROP:
                 cropped_imgs, bboxes, _, paddings = detect_face_and_crop(imgs, face_detector)
                 cropped_imgs = cropped_imgs.to(config.device) 
@@ -679,7 +667,7 @@ if __name__ == '__main__':
 
             with torch.no_grad():
                 series_len = [frames_sampled]
-                all_params = tater([cropped_imgs], series_len, audio_batch=[audio_embed], phoneme_batch=phoneme_embed)
+                all_params = tater([cropped_imgs], series_len, audio_batch=[audio_embed])
 
                 flame_output = flame.forward(all_params)
                 renderer_output = renderer.forward(flame_output['vertices'], all_params['cam'],
@@ -703,5 +691,5 @@ if __name__ == '__main__':
             final_imgs = superimpose_image(torch.cat(all_imgs), torch.cat(all_renders), all_bbxs, all_paddings, opacity=0.75, red_tint=0.0)
             final_imgs_crop = superimpose_image(torch.cat(all_imgs), torch.cat(all_crops), all_bbxs, all_paddings, opacity=0.5, red_tint=0.25)
 
-        save_video(final_imgs, batch["audio"], sample_rate, f"{segment_idx}_TATER_2.mp4", fps=25)
-        save_video(final_imgs_crop, batch["audio"], sample_rate, f"{segment_idx}_TATER_CROP_2.mp4", fps=25)
+        save_video(final_imgs, batch["audio"], sample_rate, f"{segment_idx}_CARA.mp4", fps=25)
+        save_video(final_imgs_crop, batch["audio"], sample_rate, f"{segment_idx}_CARA_CROP.mp4", fps=25)
