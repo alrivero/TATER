@@ -224,6 +224,10 @@ class CrossAttentionTransformer(nn.Module):
     ):
         B = x1.size(0)
 
+        if attention_mask is not None:
+            # cast once at the top; avoids repeated conversions internally
+            attention_mask = attention_mask.to(torch.bool)
+
         # Apply positional embeddings
         if self.positional_embedding_1 is not None:
             x1 = self.positional_embedding_1(x1, series_len=series_len)
@@ -244,7 +248,7 @@ class CrossAttentionTransformer(nn.Module):
         x2 = torch.cat((x2, self.eval_token_2.expand(B, -1, -1)), dim=1)
 
         if attention_mask is not None:
-            attention_mask = pad(attention_mask, (0, 1), mode="constant", value=False)
+            attention_mask = pad(attention_mask, (0, 1), mode="constant", value=False).bool()
 
         # Pass through transformer layers without cross attention
         for i in range(self.encode_layers):

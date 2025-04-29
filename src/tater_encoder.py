@@ -233,7 +233,7 @@ class TATEREncoder(SmirkEncoder):
             start_idx += length
         
         # Invert the mask for use with nn.TransformerEncoderLayer (True for padding positions)
-        key_padding_mask = ~attention_mask  # Now True for padding, False for valid tokens
+        key_padding_mask = ~(attention_mask.bool())  # Now True for padding, False for valid tokens
         
         return padded_tensor, key_padding_mask, lengths
 
