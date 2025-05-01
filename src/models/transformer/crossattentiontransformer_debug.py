@@ -240,26 +240,26 @@ class CrossAttentionTransformer(nn.Module):
 
         # ─── Stage 1 ─────────────────────────────────────────────
         for layer in self.encoder_1:
-            x1 = layer(x1, src_key_padding_mask=attentionion_mask)
+            x1 = layer(x1, src_key_padding_mask=attention_mask)
         for layer in self.encoder_2:
-            x2 = layer(x2, src_key_padding_mask=attentionion_mask)
+            x2 = layer(x2, src_key_padding_mask=attention_mask)
         x1_residual = x1
 
         # ─── Stage 2 ─────────────────────────────────────────────
         for i in range(self.cross_layers):
             tag = f"cross_L{i}"
             x1 = self.encoder_1_cross_layers[i].forward_self_attention(
-                x1, src_key_padding_mask=attentionion_mask,
+                x1, src_key_padding_mask=attention_mask,
                 attn_store=self._attn_buf, scope=f"{tag}_x1")
             x2 = self.encoder_2_cross_layers[i].forward_self_attention(
-                x2, src_key_padding_mask=attentionion_mask,
+                x2, src_key_padding_mask=attention_mask,
                 attn_store=self._attn_buf, scope=f"{tag}_x2")
 
             x1 = self.encoder_1_cross_layers[i].forward_cross_attention(
-                x1, memory=x2, memory_key_padding_mask=attentionion_mask,
+                x1, memory=x2, memory_key_padding_mask=attention_mask,
                 attn_store=self._attn_buf, scope=tag, direction="x1→x2")
             x2 = self.encoder_2_cross_layers[i].forward_cross_attention(
-                x2, memory=x1, memory_key_padding_mask=attentionion_mask,
+                x2, memory=x1, memory_key_padding_mask=attention_mask,
                 attn_store=self._attn_buf, scope=tag, direction="x2→x1")
 
             x1 = self.encoder_1_cross_layers[i].forward_feedforward(x1)
@@ -268,7 +268,7 @@ class CrossAttentionTransformer(nn.Module):
         # ─── Stage 3 ─────────────────────────────────────────────
         x = torch.cat([x1, x2], dim=-1)
         for layer in self.concat_layers:
-            x = layer(x, src_key_padding_mask=attentionion_mask)
+            x = layer(x, src_key_padding_mask=attention_mask)
 
         if self.final_dropout is not None:
             x = self.final_dropout(x)
