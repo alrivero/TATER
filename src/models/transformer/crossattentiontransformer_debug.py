@@ -6,12 +6,12 @@ from typing import Optional, Callable, List, Tuple, Union
 from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositionalEncoding
 
 # ---------------------------------------------------------------- #
-# 1) Drop-in subclass of TransformerEncoderLayer that adds
+# 1) Drop‐in subclass of TransformerEncoderLayer that adds
 #    a `return_attn` flag to forward(), returning (output, attn_maps)
 # ---------------------------------------------------------------- #
 class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
-        # identical signature to nn.TransformerEncoderLayer
+        # Accept exactly the same init args as nn.TransformerEncoderLayer
         super().__init__(*args, **kwargs)
         self._attn_buffer: Optional[List[Tensor]] = None
 
@@ -43,13 +43,13 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         if not return_attn:
-            # behave exactly as the base class
+            # exact base behavior
             return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
-        # prepare to collect attention weights
+        # prepare to collect
         self._attn_buffer = []
 
-        # canonicalize masks just like base
+        # canonicalize masks like base
         src_key_padding_mask = F._canonical_mask(
             mask=src_key_padding_mask,
             mask_name="src_key_padding_mask",
@@ -67,7 +67,7 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         )
 
         x = src
-        # exactly mirror the base-layer Python fallback
+        # mirror base-layer Python fallback (skipping fastpath)
         if self.norm_first:
             y = self.norm1(x)
             x = x + self._sa_block(y, mask, src_key_padding_mask, is_causal)
@@ -76,13 +76,10 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
             x = self.norm1(x + self._sa_block(x, mask, src_key_padding_mask, is_causal))
             x = self.norm2(x + self._ff_block(x))
 
-        # no extra post‐norm here since base forward does it via C++
-        if self.norm is not None:
-            x = self.norm(x)
-
-        maps = self._attn_buffer
+        # done—no extra self.norm in TransformerEncoderLayer
+        attn_maps = self._attn_buffer
         self._attn_buffer = None
-        return x, maps
+        return x, attn_maps
 
 
 # ---------------------------------------------------------------- #
@@ -106,14 +103,10 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
-        self.self_attn  = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=nhead,
-            dropout=dropout, batch_first=batch_first, bias=bias, **factory_kwargs
-        )
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=nhead,
-            dropout=dropout, batch_first=batch_first, bias=bias, **factory_kwargs
-        )
+        self.self_attn  = nn.MultiheadAttention(d_model, nhead,
+            dropout=dropout, batch_first=batch_first, bias=bias, **factory_kwargs)
+        self.cross_attn = nn.MultiheadAttention(d_model, nhead,
+            dropout=dropout, batch_first=batch_first, bias=bias, **factory_kwargs)
         self.linear1    = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
         self.dropout    = nn.Dropout(dropout)
         self.linear2    = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
