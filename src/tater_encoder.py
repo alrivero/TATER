@@ -3,9 +3,10 @@ from torch import nn
 import torch.nn.functional as F
 from scipy.spatial.transform import Rotation as R
 from .models.transformer.temporaltransformer import TemporalTransformer
-from .models.transformer.crossattentiontransformer import CrossAttentionTransformer
+from .models.transformer.crossattentiontransformer_debug import CrossAttentionTransformer
 from .smirk_encoder import SmirkEncoder
 import torch.nn.functional as F
+from .utils.debug_utils import save_attention_maps
 
 def initialize_transformer_xavier(m, scale=1e-4):
     """Xavier initialization for transformer layers with small random values."""
@@ -449,7 +450,14 @@ class TATEREncoder(SmirkEncoder):
                     sample_rate=self.downsample_rate
                 )
 
-                exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+                seq, tok, res_seq, res_tok, attn = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+
+                # visualise first item in batch
+                saved = save_attention_maps(attn, save_dir="debug_attn", batch_idx=0)
+                print("Saved", len(saved), "attention heat-maps to", saved[0].parent)
+
+                print(kill_me_lol)
+                # exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
             else:
                 exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
 
