@@ -42,15 +42,15 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
             bias=bias,
             **factory_kwargs
         )
-        self.linear1   = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
-        self.dropout   = nn.Dropout(dropout)
-        self.linear2   = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
-        self.norm1     = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.norm2     = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.norm3     = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.dropout1  = nn.Dropout(dropout)
-        self.dropout2  = nn.Dropout(dropout)
-        self.dropout3  = nn.Dropout(dropout)
+        self.linear1    = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
+        self.dropout    = nn.Dropout(dropout)
+        self.linear2    = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
+        self.norm1      = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.norm2      = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.norm3      = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.dropout1   = nn.Dropout(dropout)
+        self.dropout2   = nn.Dropout(dropout)
+        self.dropout3   = nn.Dropout(dropout)
         self.activation = activation
         self.norm_first = norm_first
 
@@ -64,7 +64,7 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         scope: str = ""
     ) -> Tensor:
         need = attn_store is not None
-        q = self.norm1(src) if self.norm_first else src
+        q    = self.norm1(src) if self.norm_first else src
         out, w = self.self_attn(
             q, q, q,
             attn_mask=src_mask,
@@ -88,8 +88,8 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         direction: str = "x1→x2"
     ) -> Tensor:
         need = attn_store is not None
-        tag = f"{scope}_{direction}"
-        q = self.norm2(src) if self.norm_first else src
+        tag  = f"{scope}_{direction}"
+        q    = self.norm2(src) if self.norm_first else src
         out, w = self.cross_attn(
             q, memory, memory,
             attn_mask=memory_mask,
@@ -125,9 +125,11 @@ class CrossAttentionTransformer(nn.Module):
         d2 = conf.attention.d_model_2
         dC = conf.attention.d_model_C
         assert dC == d1 + d2, "d_model_C must equal d_model_1 + d_model_2"
-        df1, df2, dfC = (conf.attention.dim_feedforward_1,
-                         conf.attention.dim_feedforward_2,
-                         conf.attention.dim_feedforward_C)
+        df1, df2, dfC = (
+            conf.attention.dim_feedforward_1,
+            conf.attention.dim_feedforward_2,
+            conf.attention.dim_feedforward_C
+        )
         nhead   = conf.attention.num_attention_heads
         dropout = conf.attention.dropout
         act     = nn.LeakyReLU(inplace=False)
@@ -142,15 +144,19 @@ class CrossAttentionTransformer(nn.Module):
 
         # Stage 1: two independent streams using stock PyTorch layers
         self.encoder_1 = nn.ModuleList([
-            nn.TransformerEncoderLayer(d_model=d1, nhead=nhead,
-                                      dim_feedforward=df1, dropout=dropout,
-                                      batch_first=True, activation=act)
+            nn.TransformerEncoderLayer(
+                d_model=d1, nhead=nhead,
+                dim_feedforward=df1, dropout=dropout,
+                batch_first=True, activation=act
+            )
             for _ in range(self.encode_layers)
         ])
         self.encoder_2 = nn.ModuleList([
-            nn.TransformerEncoderLayer(d_model=d2, nhead=nhead,
-                                      dim_feedforward=df2, dropout=dropout,
-                                      batch_first=True, activation=act)
+            nn.TransformerEncoderLayer(
+                d_model=d2, nhead=nhead,
+                dim_feedforward=df2, dropout=dropout,
+                batch_first=True, activation=act
+            )
             for _ in range(self.encode_layers)
         ])
 
@@ -160,33 +166,39 @@ class CrossAttentionTransformer(nn.Module):
                 d_model=d1, nhead=nhead,
                 dim_feedforward=df1, dropout=dropout,
                 batch_first=True, activation=act
-            ) for _ in range(self.cross_layers)
+            )
+            for _ in range(self.cross_layers)
         ])
         self.encoder_2_cross_layers = nn.ModuleList([
             TransformerEncoderLayerWithCrossAttention(
                 d_model=d2, nhead=nhead,
                 dim_feedforward=df2, dropout=dropout,
                 batch_first=True, activation=act
-            ) for _ in range(self.cross_layers)
+            )
+            for _ in range(self.cross_layers)
         ])
 
         # Stage 3: a final “concat” stream, again stock layers
         self.concat_layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(d_model=dC, nhead=nhead,
-                                      dim_feedforward=dfC, dropout=dropout,
-                                      batch_first=True, activation=act)
+            nn.TransformerEncoderLayer(
+                d_model=dC, nhead=nhead,
+                dim_feedforward=dfC, dropout=dropout,
+                batch_first=True, activation=act
+            )
             for _ in range(self.concat_layers)
         ])
 
         # Eval & mask tokens
-        self.eval_token_1 = nn.Parameter(torch.rand(1, 1, d1))
-        self.eval_token_2 = nn.Parameter(torch.rand(1, 1, d2))
-        self.mask_token_1 = nn.Parameter(torch.rand(d1))
-        self.mask_token_2 = nn.Parameter(torch.rand(d2))
+        self.eval_token_1       = nn.Parameter(torch.rand(1, 1, d1))
+        self.eval_token_2       = nn.Parameter(torch.rand(1, 1, d2))
+        self.mask_token_1       = nn.Parameter(torch.rand(d1))
+        self.mask_token_2       = nn.Parameter(torch.rand(d2))
         self.encoder_1_mask_rate = conf.encoder_1_mask_rate
         self.encoder_2_mask_rate = conf.encoder_2_mask_rate
-        self.final_dropout = (nn.Dropout(conf.final_dropout.prob)
-                              if conf.final_dropout.enable else None)
+        self.final_dropout      = (
+            nn.Dropout(conf.final_dropout.prob)
+            if conf.final_dropout.enable else None
+        )
 
         # Dynamically register hooks on all MultiheadAttention modules
         self._attn_buf: Optional[List[Tuple[str, Tensor]]] = None
@@ -222,16 +234,23 @@ class CrossAttentionTransformer(nn.Module):
 
         if attention_mask is not None:
             attention_mask = attention_mask.to(torch.bool)
+
         # positional embeddings
         if self.positional_embedding_1 is not None:
             x1 = self.positional_embedding_1(x1, series_len=series_len)
             x2 = self.positional_embedding_2(x2, series_len=series_len)
+
         # token masking
         if token_mask is not None:
-            m1 = (torch.rand_like(token_mask.float()) <= self.encoder_1_mask_rate) & token_mask
-            m2 = (torch.rand_like(token_mask.float()) <= self.encoder_2_mask_rate) & token_mask
+            m1 = (
+                torch.rand_like(token_mask.float()) <= self.encoder_1_mask_rate
+            ) & token_mask
+            m2 = (
+                torch.rand_like(token_mask.float()) <= self.encoder_2_mask_rate
+            ) & token_mask
             x1[m1] = self.mask_token_1
             x2[m2] = self.mask_token_2
+
         # append eval tokens
         x1 = torch.cat([x1, self.eval_token_1.expand(B, -1, -1)], dim=1)
         x2 = torch.cat([x2, self.eval_token_2.expand(B, -1, -1)], dim=1)
@@ -249,18 +268,34 @@ class CrossAttentionTransformer(nn.Module):
         for i in range(self.cross_layers):
             tag = f"cross_L{i}"
             x1 = self.encoder_1_cross_layers[i].forward_self_attention(
-                x1, src_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=f"{tag}_x1")
+                x1,
+                src_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf,
+                scope=f"{tag}_x1"
+            )
             x2 = self.encoder_2_cross_layers[i].forward_self_attention(
-                x2, src_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=f"{tag}_x2")
+                x2,
+                src_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf,
+                scope=f"{tag}_x2"
+            )
 
             x1 = self.encoder_1_cross_layers[i].forward_cross_attention(
-                x1, memory=x2, memory_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=tag, direction="x1→x2")
+                x1,
+                memory=x2,
+                memory_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf,
+                scope=tag,
+                direction="x1→x2"
+            )
             x2 = self.encoder_2_cross_layers[i].forward_cross_attention(
-                x2, memory=x1, memory_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=tag, direction="x2→x1")
+                x2,
+                memory=x1,
+                memory_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf,
+                scope=tag,
+                direction="x2→x1"
+            )
 
             x1 = self.encoder_1_cross_layers[i].forward_feedforward(x1)
             x2 = self.encoder_2_cross_layers[i].forward_feedforward(x2)
@@ -274,7 +309,12 @@ class CrossAttentionTransformer(nn.Module):
             x = self.final_dropout(x)
             x1_residual = self.final_dropout(x1_residual)
 
-        outputs = (x[:, :-1], x[:, -1:], x1_residual[:, :-1], x1_residual[:, -1:])
+        outputs = (
+            x[:, :-1],
+            x[:, -1:],
+            x1_residual[:, :-1],
+            x1_residual[:, -1:]
+        )
         attn_out = self._attn_buf
         self._attn_buf = None
         return (*outputs, attn_out) if return_attn else outputs
@@ -284,16 +324,16 @@ class CrossAttentionTransformer(nn.Module):
         num_layers = len(self.encoder_1)
         for i in range(num_layers):
             self.encoder_1[i].load_state_dict({
-                "self_attn.in_proj_weight": weight_dict[f"{i}.self_attn.in_proj_weight"],
-                "self_attn.in_proj_bias":   weight_dict[f"{i}.self_attn.in_proj_bias"],
-                "self_attn.out_proj.weight":weight_dict[f"{i}.self_attn.out_proj.weight"],
-                "self_attn.out_proj.bias":  weight_dict[f"{i}.self_attn.out_proj.bias"],
-                "linear1.weight":           weight_dict[f"{i}.linear1.weight"],
-                "linear1.bias":             weight_dict[f"{i}.linear1.bias"],
-                "linear2.weight":           weight_dict[f"{i}.linear2.weight"],
-                "linear2.bias":             weight_dict[f"{i}.linear2.bias"],
-                "norm1.weight":             weight_dict[f"{i}.norm1.weight"],
-                "norm1.bias":               weight_dict[f"{i}.norm1.bias"],
-                "norm2.weight":             weight_dict[f"{i}.norm2.weight"],
-                "norm2.bias":               weight_dict[f"{i}.norm2.bias"],
+                "self_attn.in_proj_weight":  weight_dict[f"{i}.self_attn.in_proj_weight"],
+                "self_attn.in_proj_bias":    weight_dict[f"{i}.self_attn.in_proj_bias"],
+                "self_attn.out_proj.weight": weight_dict[f"{i}.self_attn.out_proj.weight"],
+                "self_attn.out_proj.bias":   weight_dict[f"{i}.self_attn.out_proj.bias"],
+                "linear1.weight":            weight_dict[f"{i}.linear1.weight"],
+                "linear1.bias":              weight_dict[f"{i}.linear1.bias"],
+                "linear2.weight":            weight_dict[f"{i}.linear2.weight"],
+                "linear2.bias":              weight_dict[f"{i}.linear2.bias"],
+                "norm1.weight":              weight_dict[f"{i}.norm1.weight"],
+                "norm1.bias":                weight_dict[f"{i}.norm1.bias"],
+                "norm2.weight":              weight_dict[f"{i}.norm2.weight"],
+                "norm2.bias":                weight_dict[f"{i}.norm2.bias"],
             })
