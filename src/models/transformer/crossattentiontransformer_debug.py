@@ -1,17 +1,17 @@
 import torch
 from torch import nn, Tensor
 from torch.nn.functional import pad
+import torch.nn.functional as F
 from typing import Optional, Callable, List, Tuple, Union
 from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositionalEncoding
-import torch.nn.functional as F
 
 # ---------------------------------------------------------------- #
-# 1) Subclass that exactly matches TransformerEncoderLayer’s API
-# and adds return_attn to forward()
+# 1) Drop-in subclass of TransformerEncoderLayer that adds
+#    a `return_attn` flag to forward(), returning (output, attn_maps)
 # ---------------------------------------------------------------- #
-class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
+class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
-        # Accepts exactly the same init args as nn.TransformerEncoderLayer
+        # identical signature to nn.TransformerEncoderLayer
         super().__init__(*args, **kwargs)
         self._attn_buffer: Optional[List[Tensor]] = None
 
@@ -22,6 +22,7 @@ class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False
     ) -> Tensor:
+        # call MHA with need_weights=True
         out, weights = self.self_attn(
             x, x, x,
             attn_mask=attn_mask,
@@ -41,17 +42,47 @@ class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
         is_causal: bool = False,
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
-        # Prepare or disable the buffer
-        self._attn_buffer = [] if return_attn else None
+        if not return_attn:
+            # behave exactly as the base class
+            return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
-        # Run parent forward (which calls our _sa_block)
-        output = super().forward(src, src_mask, src_key_padding_mask, is_causal)
+        # prepare to collect attention weights
+        self._attn_buffer = []
 
-        if return_attn:
-            maps = self._attn_buffer
-            self._attn_buffer = None
-            return output, maps
-        return output
+        # canonicalize masks just like base
+        src_key_padding_mask = F._canonical_mask(
+            mask=src_key_padding_mask,
+            mask_name="src_key_padding_mask",
+            other_type=F._none_or_dtype(src_mask),
+            other_name="src_mask",
+            target_type=src.dtype,
+        )
+        mask = F._canonical_mask(
+            mask=src_mask,
+            mask_name="src_mask",
+            other_type=None,
+            other_name="",
+            target_type=src.dtype,
+            check_other=False,
+        )
+
+        x = src
+        # exactly mirror the base-layer Python fallback
+        if self.norm_first:
+            y = self.norm1(x)
+            x = x + self._sa_block(y, mask, src_key_padding_mask, is_causal)
+            x = x + self._ff_block(self.norm2(x))
+        else:
+            x = self.norm1(x + self._sa_block(x, mask, src_key_padding_mask, is_causal))
+            x = self.norm2(x + self._ff_block(x))
+
+        # no extra post‐norm here since base forward does it via C++
+        if self.norm is not None:
+            x = self.norm(x)
+
+        maps = self._attn_buffer
+        self._attn_buffer = None
+        return x, maps
 
 
 # ---------------------------------------------------------------- #
@@ -105,18 +136,17 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
         scope: str = ""
     ) -> Tensor:
         need = attn_store is not None
-        q, out, w = (self.norm1(src) if self.norm_first else src,
-                     *self.self_attn(
-                         q if (q := (self.norm1(src) if self.norm_first else src)) is not None else src,
-                         q, q,
-                         attn_mask=src_mask,
-                         key_padding_mask=src_key_padding_mask,
-                         need_weights=need,
-                         average_attn_weights=False
-                     ))
+        q = self.norm1(src) if self.norm_first else src
+        out, w = self.self_attn(
+            q, q, q,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+            need_weights=need,
+            average_attn_weights=False
+        )
         if attn_store is not None:
             attn_store.append((f"{scope}_self", w.detach().cpu()))
-        return (src + self.dropout1(out)) if self.norm_first else self.norm1(src + self.dropout1(out))
+        return src + self.dropout1(out) if self.norm_first else self.norm1(src + self.dropout1(out))
 
     def forward_cross_attention(
         self,
@@ -131,18 +161,17 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
     ) -> Tensor:
         need = attn_store is not None
         tag  = f"{scope}_{direction}"
-        q, out, w = (self.norm2(src) if self.norm_first else src,
-                     *self.cross_attn(
-                         (self.norm2(src) if self.norm_first else src),
-                         memory, memory,
-                         attn_mask=memory_mask,
-                         key_padding_mask=memory_key_padding_mask,
-                         need_weights=need,
-                         average_attn_weights=False
-                     ))
+        q = self.norm2(src) if self.norm_first else src
+        out, w = self.cross_attn(
+            q, memory, memory,
+            attn_mask=memory_mask,
+            key_padding_mask=memory_key_padding_mask,
+            need_weights=need,
+            average_attn_weights=False
+        )
         if attn_store is not None:
             attn_store.append((tag, w.detach().cpu()))
-        return (src + self.dropout2(out)) if self.norm_first else self.norm2(src + self.dropout2(out))
+        return src + self.dropout2(out) if self.norm_first else self.norm2(src + self.dropout2(out))
 
     def forward_feedforward(self, src: Tensor) -> Tensor:
         if self.norm_first:
@@ -154,13 +183,13 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
 
 
 # ---------------------------------------------------------------- #
-# 3) CrossAttentionTransformer integrating both subclasses
+# 3) CrossAttentionTransformer integrating the new subclass
 # ---------------------------------------------------------------- #
 class CrossAttentionTransformer(nn.Module):
     def __init__(self, conf):
         super().__init__()
 
-        # Configuration
+        # Unpack configuration
         self.encode_layers = conf.num_layers
         self.cross_layers  = conf.cross_layers
         self.concat_layers = conf.concat_layers
@@ -185,17 +214,17 @@ class CrossAttentionTransformer(nn.Module):
             self.positional_embedding_1 = None
             self.positional_embedding_2 = None
 
-        # Stage 1: use TransformerEncoderLayerWithAttn, no extra args beyond defaults + batch_first+activation
+        # ─── Stage 1 ─── use TransformerEncoderLayerWithMaps ──────────
         self.encoder_1 = nn.ModuleList([
-            TransformerEncoderLayerWithAttn(d1, nhead, df1, dropout, act, batch_first=True)
+            TransformerEncoderLayerWithMaps(d1, nhead, df1, dropout, act, 1e-5, True, False)
             for _ in range(self.encode_layers)
         ])
         self.encoder_2 = nn.ModuleList([
-            TransformerEncoderLayerWithAttn(d2, nhead, df2, dropout, act, batch_first=True)
+            TransformerEncoderLayerWithMaps(d2, nhead, df2, dropout, act, 1e-5, True, False)
             for _ in range(self.encode_layers)
         ])
 
-        # Stage 2: custom cross‐attention layers (unchanged)
+        # ─── Stage 2 ─── custom cross‐attention ──────────────────────
         self.encoder_1_cross_layers = nn.ModuleList([
             TransformerEncoderLayerWithCrossAttention(d1, nhead, df1, dropout, activation=act, batch_first=True)
             for _ in range(self.cross_layers)
@@ -205,9 +234,9 @@ class CrossAttentionTransformer(nn.Module):
             for _ in range(self.cross_layers)
         ])
 
-        # Stage 3: concat stream, again WithAttn
+        # ─── Stage 3 ─── again TransformerEncoderLayerWithMaps ──────
         self.concat_layers = nn.ModuleList([
-            TransformerEncoderLayerWithAttn(dC, nhead, dfC, dropout, act, batch_first=True)
+            TransformerEncoderLayerWithMaps(dC, nhead, dfC, dropout, act, 1e-5, True, False)
             for _ in range(self.concat_layers)
         ])
 
@@ -218,8 +247,7 @@ class CrossAttentionTransformer(nn.Module):
         self.mask_token_2        = nn.Parameter(torch.rand(d2))
         self.encoder_1_mask_rate = conf.encoder_1_mask_rate
         self.encoder_2_mask_rate = conf.encoder_2_mask_rate
-        self.final_dropout       = (nn.Dropout(conf.final_dropout.prob)
-                                   if conf.final_dropout.enable else None)
+        self.final_dropout       = nn.Dropout(conf.final_dropout.prob) if conf.final_dropout.enable else None
 
     def forward(
         self,
@@ -230,26 +258,32 @@ class CrossAttentionTransformer(nn.Module):
         token_mask: Optional[torch.Tensor] = None,
         return_attn: bool = False
     ):
+        # shared buffer
         self._attn_buf = [] if return_attn else None
         B = x1.size(0)
 
         if attention_mask is not None:
             attention_mask = attention_mask.to(torch.bool)
+
+        # positional embeddings
         if self.positional_embedding_1 is not None:
             x1 = self.positional_embedding_1(x1, series_len=series_len)
             x2 = self.positional_embedding_2(x2, series_len=series_len)
+
+        # token masking
         if token_mask is not None:
             m1 = (torch.rand_like(token_mask.float()) <= self.encoder_1_mask_rate) & token_mask
             m2 = (torch.rand_like(token_mask.float()) <= self.encoder_2_mask_rate) & token_mask
             x1[m1] = self.mask_token_1
             x2[m2] = self.mask_token_2
 
+        # append eval tokens
         x1 = torch.cat([x1, self.eval_token_1.expand(B,-1,-1)], dim=1)
         x2 = torch.cat([x2, self.eval_token_2.expand(B,-1,-1)], dim=1)
         if attention_mask is not None:
             attention_mask = pad(attention_mask, (0,1), value=False)
 
-        # Stage 1
+        # ─── Stage 1 ─────────────────────────────────────────────
         for i, layer in enumerate(self.encoder_1):
             if return_attn:
                 x1, maps = layer(x1, src_mask=None, src_key_padding_mask=attention_mask, is_causal=False, return_attn=True)
@@ -268,17 +302,27 @@ class CrossAttentionTransformer(nn.Module):
 
         x1_residual = x1
 
-        # Stage 2
+        # ─── Stage 2 ─────────────────────────────────────────────
         for i in range(self.cross_layers):
             tag = f"cross_L{i}"
-            x1 = self.encoder_1_cross_layers[i].forward_self_attention(x1, src_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=f"{tag}_x1")
-            x2 = self.encoder_2_cross_layers[i].forward_self_attention(x2, src_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=f"{tag}_x2")
-            x1 = self.encoder_1_cross_layers[i].forward_cross_attention(x1, memory=x2, memory_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=tag, direction="x1→x2")
-            x2 = self.encoder_2_cross_layers[i].forward_cross_attention(x2, memory=x1, memory_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=tag, direction="x2→x1")
+            x1 = self.encoder_1_cross_layers[i].forward_self_attention(
+                x1, src_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=f"{tag}_x1"
+            )
+            x2 = self.encoder_2_cross_layers[i].forward_self_attention(
+                x2, src_key_padding_mask=attention_mask, attn_store=self._attn_buf, scope=f"{tag}_x2"
+            )
+            x1 = self.encoder_1_cross_layers[i].forward_cross_attention(
+                x1, memory=x2, memory_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf, scope=tag, direction="x1→x2"
+            )
+            x2 = self.encoder_2_cross_layers[i].forward_cross_attention(
+                x2, memory=x1, memory_key_padding_mask=attention_mask,
+                attn_store=self._attn_buf, scope=tag, direction="x2→x1"
+            )
             x1 = self.encoder_1_cross_layers[i].forward_feedforward(x1)
             x2 = self.encoder_2_cross_layers[i].forward_feedforward(x2)
 
-        # Stage 3
+        # ─── Stage 3 ─────────────────────────────────────────────
         x = torch.cat([x1, x2], dim=-1)
         for i, layer in enumerate(self.concat_layers):
             if return_attn:
