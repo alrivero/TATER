@@ -7,11 +7,11 @@ from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositi
 
 # ---------------------------------------------------------------- #
 # 1) Drop‐in subclass of TransformerEncoderLayer that adds
-#    return_attn → (output, [attn_maps])
+#    return_attn → (output, attn_maps) via pure-Python fallback
 # ---------------------------------------------------------------- #
 class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
-        # exactly same signature/behavior as the stock layer
+        # identical signature to nn.TransformerEncoderLayer
         super().__init__(*args, **kwargs)
         self._attn_buffer: Optional[List[Tensor]] = None
 
@@ -22,12 +22,12 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False
     ) -> Tensor:
-        # call MHA with weights
+        # always request weights when collecting
         out, weights = self.self_attn(
             x, x, x,
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
-            need_weights=True,
+            need_weights=(self._attn_buffer is not None),
             is_causal=is_causal
         )
         if self._attn_buffer is not None:
@@ -43,15 +43,13 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         if not return_attn:
-            # exactly stock behavior (including fast‐path)
+            # stock behavior (may use fast‐path)
             return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
-        # disable fast‐path so our Python _sa_block runs
-        torch.backends.mha.set_fastpath_enabled(False)
-        # collect into this list
+        # prepare to collect
         self._attn_buffer = []
 
-        # canonicalize masks, matching stock implementation
+        # canonicalize masks exactly like stock
         src_key_padding_mask = F._canonical_mask(
             mask=src_key_padding_mask,
             mask_name="src_key_padding_mask",
@@ -69,7 +67,7 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         )
 
         x = src
-        # mirror the Python‐fallback path
+        # Python fallback path from TransformerEncoderLayer
         if self.norm_first:
             y = self.norm1(x)
             x = x + self._sa_block(y, mask, src_key_padding_mask, is_causal)
@@ -78,17 +76,14 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
             x = self.norm1(x + self._sa_block(x, mask, src_key_padding_mask, is_causal))
             x = self.norm2(x + self._ff_block(x))
 
-        # note: stock nn.TransformerEncoderLayer does NOT apply a final self.norm here
-
-        attn_maps = self._attn_buffer
+        # collect and clear
+        maps = self._attn_buffer
         self._attn_buffer = None
-        # re‐enable fast‐path for other calls
-        torch.backends.mha.set_fastpath_enabled(True)
-        return x, attn_maps
+        return x, maps
 
 
 # ---------------------------------------------------------------- #
-# 2) Your custom cross‐attention encoder layer (unchanged)
+# 2) Custom cross‐attention encoder layer (unchanged)
 # ---------------------------------------------------------------- #
 class TransformerEncoderLayerWithCrossAttention(nn.Module):
     def __init__(
@@ -300,7 +295,7 @@ class CrossAttentionTransformer(nn.Module):
         # positional embeddings
         if self.positional_embedding_1 is not None:
             x1 = self.positional_embedding_1(x1, series_len=series_len)
-            x2 = self.positional_embedding_2(x2, series_len=series_len)
+            x2 = self.pos positional_embedding_2(x2, series_len=series_len)
 
         # token masking
         if token_mask is not None:
@@ -313,7 +308,7 @@ class CrossAttentionTransformer(nn.Module):
         x1 = torch.cat([x1, self.eval_token_1.expand(B, -1, -1)], dim=1)
         x2 = torch.cat([x2, self.eval_token_2.expand(B, -1, -1)], dim=1)
         if attention_mask is not None:
-            attention_mask = pad(attention_mask, (0,1), value=False)
+            attention_mask = pad(attention_mask, (0, 1), value=False)
 
         # ─── Stage 1 ─────────────────────────────────────────────
         for i, layer in enumerate(self.encoder_1):
