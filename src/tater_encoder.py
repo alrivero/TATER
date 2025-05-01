@@ -82,13 +82,13 @@ class TATEREncoder(SmirkEncoder):
                 torch.nn.init.zeros_(self.exp_layer.weight)
                 torch.nn.init.zeros_(self.exp_layer.bias)
 
-            if self.exp_use_audio:
-                self.exp_transformer.encoder_2.apply(init_xavier)
-                self.exp_transformer.encoder_2_cross_layers.apply(init_xavier)
-                self.exp_transformer.encoder_1_cross_layers.apply(init_xavier)
-                self.exp_transformer.concat_layers.apply(init_xavier)
-                torch.nn.init.zeros_(self.exp_layer.weight)
-                torch.nn.init.zeros_(self.exp_layer.bias)
+                # if self.exp_use_audio:
+                #     self.exp_transformer.encoder_2.apply(init_xavier)
+                #     self.exp_transformer.encoder_2_cross_layers.apply(init_xavier)
+                #     self.exp_transformer.encoder_1_cross_layers.apply(init_xavier)
+                #     self.exp_transformer.concat_layers.apply(init_xavier)
+                #     torch.nn.init.zeros_(self.exp_layer.weight)
+                #     torch.nn.init.zeros_(self.exp_layer.bias)
 
         self.use_base_shape = config.arch.TATER.Shape.use_base_encoder
         self.use_latent_shape = config.arch.TATER.Shape.use_latent
