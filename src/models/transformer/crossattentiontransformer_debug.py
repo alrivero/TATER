@@ -2,6 +2,7 @@
 #  helper to tag & store
 # ────────────────────────────────────────────────────────────────────
 from typing import List, Tuple, Optional
+from typing import Optional, Callable
 import torch
 from torch import nn, Tensor
 from torch.nn.functional import pad
