@@ -81,7 +81,7 @@ class TATEREncoder(SmirkEncoder):
                 self.exp_transformer.apply(init_xavier)
                 torch.nn.init.zeros_(self.exp_layer.weight)
                 torch.nn.init.zeros_(self.exp_layer.bias)
-
+ 
                 # if self.exp_use_audio:
                 #     self.exp_transformer.encoder_2.apply(init_xavier)
                 #     self.exp_transformer.encoder_2_cross_layers.apply(init_xavier)
