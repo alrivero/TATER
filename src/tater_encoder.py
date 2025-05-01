@@ -6,7 +6,7 @@ from .models.transformer.temporaltransformer import TemporalTransformer
 from .models.transformer.crossattentiontransformer_debug import CrossAttentionTransformer
 from .smirk_encoder import SmirkEncoder
 import torch.nn.functional as F
-from .utils.debug_utils import save_attention_maps
+from .utils.debug_utils import save_attention_maps, visualise_attention
 
 def initialize_transformer_xavier(m, scale=1e-4):
     """Xavier initialization for transformer layers with small random values."""
@@ -450,11 +450,18 @@ class TATEREncoder(SmirkEncoder):
                     sample_rate=self.downsample_rate
                 )
 
-                seq, tok, res_seq, res_tok, attn = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
+                seq, tok, res_seq, res_tok, attn_records = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
 
                 # visualise first item in batch
-                saved = save_attention_maps(attn, save_dir="debug_attn", batch_idx=0)
-                print("Saved", len(saved), "attention heat-maps to", saved[0].parent)
+                # see / save the first few heat-maps
+                visualise_attention(
+                    attn_records,
+                    head_idx=0,          # pick head 0
+                    max_plots=15,        # stop after 15 figures
+                    save_dir="my_maps",  # write PNGs here
+                    show=False           # just save, don’t pop up windows
+                )
+                print("Done!  Images are in ./my_maps/")
 
                 print(kill_me_lol)
                 # exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
