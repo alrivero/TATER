@@ -41,8 +41,10 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         if not return_attn:
+            # Use the built-in fastpath when not collecting maps
             return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
+        # Otherwise force Python fallback and collect
         self._attn_buffer = []
 
         src_key_padding_mask = F._canonical_mask(
@@ -203,7 +205,7 @@ class CrossAttentionTransformer(nn.Module):
             self.positional_embedding_1 = None
             self.positional_embedding_2 = None
 
-        # Stage 1: use our TransformerEncoderLayerWithMaps
+        # ─── Stage 1 ─── use TransformerEncoderLayerWithMaps ──────────
         self.encoder_1 = nn.ModuleList([
             TransformerEncoderLayerWithMaps(
                 d1, nhead,
@@ -225,7 +227,7 @@ class CrossAttentionTransformer(nn.Module):
             for _ in range(self.encode_layers)
         ])
 
-        # Stage 2: custom cross-attention
+        # ─── Stage 2 ─── custom cross-attention ──────────────────────
         self.encoder_1_cross_layers = nn.ModuleList([
             TransformerEncoderLayerWithCrossAttention(
                 d1, nhead,
@@ -247,7 +249,7 @@ class CrossAttentionTransformer(nn.Module):
             for _ in range(self.cross_layers)
         ])
 
-        # Stage 3: again TransformerEncoderLayerWithMaps
+        # ─── Stage 3 ─── again TransformerEncoderLayerWithMaps ──────
         self.concat_layers = nn.ModuleList([
             TransformerEncoderLayerWithMaps(
                 dC, nhead,
@@ -301,7 +303,7 @@ class CrossAttentionTransformer(nn.Module):
         if attention_mask is not None:
             attention_mask = pad(attention_mask, (0, 1), value=False)
 
-        # Stage 1
+        # ─── Stage 1 ─────────────────────────────────────────────
         for i, layer in enumerate(self.encoder_1):
             if return_attn:
                 x1, maps = layer(
@@ -342,7 +344,7 @@ class CrossAttentionTransformer(nn.Module):
 
         x1_residual = x1
 
-        # Stage 2
+        # ─── Stage 2 ─────────────────────────────────────────────
         for i in range(self.cross_layers):
             tag = f"cross_L{i}"
             x1 = self.encoder_1_cross_layers[i].forward_self_attention(
@@ -364,7 +366,7 @@ class CrossAttentionTransformer(nn.Module):
             x1 = self.encoder_1_cross_layers[i].forward_feedforward(x1)
             x2 = self.encoder_2_cross_layers[i].forward_feedforward(x2)
 
-        # Stage 3
+        # ─── Stage 3 ─────────────────────────────────────────────
         x = torch.cat([x1, x2], dim=-1)
         for i, layer in enumerate(self.concat_layers):
             if return_attn:
