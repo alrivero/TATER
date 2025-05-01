@@ -2,6 +2,7 @@ import torch
 from torch import nn, Tensor
 from torch.nn.functional import pad
 from typing import Optional, Callable, List, Tuple, Any
+from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositionalEncoding
 
 # --------------------------- helper -------------------------------- #
 def _append(store: Optional[List[Tuple[str, Tensor]]],
