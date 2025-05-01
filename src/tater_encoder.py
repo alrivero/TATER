@@ -450,7 +450,7 @@ class TATEREncoder(SmirkEncoder):
                     sample_rate=self.downsample_rate
                 )
 
-                seq, tok, res_seq, res_tok, attn = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+                seq, tok, res_seq, res_tok, attn = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
 
                 # visualise first item in batch
                 saved = save_attention_maps(attn, save_dir="debug_attn", batch_idx=0)

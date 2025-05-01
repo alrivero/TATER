@@ -150,6 +150,7 @@ def train(rank, world_size, config):
                         error_message = traceback.format_exc()
                         print(f"Error captured: {error_message}")
                         print(e)
+                        exit()
 
                 if rank == 0 and (batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1):
                     trainer.module.save_model(trainer.module.state_dict(), os.path.join(config.train.log_path, f'model_{epoch}_{batch_idx}.pt'))
