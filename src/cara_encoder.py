@@ -61,7 +61,7 @@ class CARAEncoder(TATEREncoder):
             # see / save the first few heat-maps
             paths = save_attention_maps(
                 attn_data=attn_records,
-                save_dir="all_attention_maps",
+                save_dir="all_attention_maps_cara",
                 batch_idx=0,
                 vmax=None,
                 cmap="viridis",
