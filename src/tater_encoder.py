@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from scipy.spatial.transform import Rotation as R
 from .models.transformer.temporaltransformer import TemporalTransformer
-from .models.transformer.crossattentiontransformer import CrossAttentionTransformer
+from .models.transformer.crossattentiontransformer_debug import CrossAttentionTransformer
 from .smirk_encoder import SmirkEncoder
 import torch.nn.functional as F
 

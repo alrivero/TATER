@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from .tater_encoder import TATEREncoder
+from .utils.debug_utils import save_attention_maps, visualise_attention
 
 class CARAEncoder(TATEREncoder):
     def forward(self, img_batch, og_series_len, audio_batch=None, token_mask=None, video_mask=None, audio_mask=None):
@@ -54,7 +55,22 @@ class CARAEncoder(TATEREncoder):
                 sample_rate=self.downsample_rate
             )
 
-            exp_residual_out, exp_class, _, _ = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+            seq, tok, res_seq, res_tok, attn_records = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
+
+                # visualise first item in batch
+                # see / save the first few heat-maps
+                paths = save_attention_maps(
+                    attn_data=attn_records,
+                    save_dir="all_attention_maps",
+                    batch_idx=0,
+                    vmax=None,
+                    cmap="viridis",
+                    dpi=150,
+                    show_progress=True
+                )
+                print("Done!  Images are in ./my_maps/")
+
+                print(kill_me_lol)
         else:
             exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
         
