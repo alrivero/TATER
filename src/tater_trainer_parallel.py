@@ -1900,6 +1900,8 @@ class TATERTrainerParallel(SmirkTrainer):
         # print("WEEEEE", batch["audio_feat"][0].shape)
 
         # Apply modality dropout
+        video_mask=None
+        audio_mask=None
         if self.modality_dropout and phase == "train":
             batch_size = len(series_len)
 
