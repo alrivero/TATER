@@ -454,12 +454,14 @@ class TATEREncoder(SmirkEncoder):
 
                 # visualise first item in batch
                 # see / save the first few heat-maps
-                visualise_attention(
-                    attn_records,
-                    head_idx=0,          # pick head 0
-                    max_plots=15,        # stop after 15 figures
-                    save_dir="my_maps",  # write PNGs here
-                    show=False           # just save, don’t pop up windows
+                paths = save_attention_maps(
+                    attn_data=attn_records,
+                    save_dir="all_attention_maps",
+                    batch_idx=0,
+                    vmax=None,
+                    cmap="viridis",
+                    dpi=150,
+                    show_progress=True
                 )
                 print("Done!  Images are in ./my_maps/")
 
