@@ -1821,7 +1821,7 @@ class TATERTrainerParallel(SmirkTrainer):
 
         # Apply token masking
         token_mask = None
-        if self.token_masking is not None:
+        if self.token_masking is not None and phase == "train":
             # Mask tokens (using the masking indices if defined)
             mask_size = int(max(series_len) * len(series_len))  # Total number of tokens
             token_mask = torch.zeros(mask_size, dtype=torch.int32)
@@ -1900,7 +1900,7 @@ class TATERTrainerParallel(SmirkTrainer):
         # print("WEEEEE", batch["audio_feat"][0].shape)
 
         # Apply modality dropout
-        if self.modality_dropout:
+        if self.modality_dropout and phase == "train":
             batch_size = len(series_len)
 
             # Initialize modality masks (1 = keep, 0 = drop)
