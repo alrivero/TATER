@@ -359,12 +359,12 @@ class CARAAffectTrainer(BaseTrainer):
         series_len = [b.shape[0] for b in batch["img"]]
 
         token_mask = None
-        if self.token_masking is not None:
+        if self.token_masking is not None and phase == "train":
             token_mask, effective_masking_rate = self.generate_phoneme_token_mask(batch, series_len)
         
         audio_mask = None
         video_mask = None
-        if self.modality_dropout:
+        if self.modality_dropout and phase == "train":
             audio_mask, video_mask = self.generate_audio_video_mask(batch, series_len)
     
         if self.tater.exp_use_audio:
