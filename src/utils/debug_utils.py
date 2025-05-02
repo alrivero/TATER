@@ -1,71 +1,83 @@
 import os
 from pathlib import Path
 from typing import List, Union, Sequence
+import re
 
 import torch
 import matplotlib.pyplot as plt
 
 
-def save_attention_maps(attn_list: List[torch.Tensor],
-                        save_dir: Union[str, os.PathLike] = "attn_vis",
-                        batch_idx: int = 0,
-                        vmax: float = None,
-                        cmap: str = "viridis",
-                        dpi: int = 150,
-                        show_progress: bool = True) -> Sequence[Path]:
+def save_attention_maps(
+    attn_data: Sequence[Tuple[str, torch.Tensor]],
+    save_dir: Union[str, os.PathLike] = "attn_vis",
+    batch_idx: int = 0,
+    vmax: float = None,
+    cmap: str = "viridis",
+    dpi: int = 150,
+    show_progress: bool = True
+) -> Sequence[Path]:
     """
-    Save each (layer, head) attention slice as a PNG.
+    Save each (tag, layer-head) attention slice as a PNG.
 
     Parameters
     ----------
-    attn_list : list of Tensors
-        Each tensor has shape (B, H, tgt_len, src_len) because
-        we called nn.MultiheadAttention with average_attn_weights=False.
+    attn_data : list of (tag, Tensor)
+        Each tensor has shape (B, H, tgt_len, src_len).
     save_dir : path-like
         Directory where .png files will be written (created if missing).
-    batch_idx : int, default 0
-        Which sample in the batch to visualise.
+    batch_idx : int, default=0
+        Which sample in the batch to visualize.
     vmax : float or None
-        Upper bound for colour scaling.  If None we pick the max of the map.
+        Upper bound for color scaling.  If None we pick the max of each map.
     cmap : str
         Any valid matplotlib colormap.
     dpi : int
         Resolution of saved images.
     show_progress : bool
-        Print progress to stdout.
+        Print progress per tag.
 
     Returns
     -------
-    list(Path)
+    List[Path]
         Paths of all images that were saved.
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    saved_paths = []
 
-    for layer_id, A in enumerate(attn_list):
-        # A.shape = (B, heads, tgt, src)
-        A = A.detach().cpu()
-        heads = A.shape[1]
-        for head_id in range(heads):
+    def _sanitize(tag: str) -> str:
+        # replace non-alphanumeric with underscore
+        return re.sub(r"[^\w\-]+", "_", tag)
+
+    saved_paths = []
+    for tag, A in attn_data:
+        A = A.detach().cpu()           # (B, heads, tgt, src)
+        B, H, T, S = A.shape
+        safe_tag = _sanitize(tag)
+
+        for head_id in range(H):
             attn_map = A[batch_idx, head_id]  # (tgt, src)
             vmax_use = float(attn_map.max() if vmax is None else vmax)
 
             fig, ax = plt.subplots(figsize=(4, 4), dpi=dpi)
-            im = ax.imshow(attn_map, vmin=0.0, vmax=vmax_use, cmap=cmap, aspect="auto")
+            im = ax.imshow(
+                attn_map,
+                vmin=0.0, vmax=vmax_use,
+                cmap=cmap,
+                aspect="auto"
+            )
             ax.set_xlabel("Key / Source position")
             ax.set_ylabel("Query / Target position")
-            ax.set_title(f"Layer {layer_id}  Head {head_id}")
+            ax.set_title(f"{tag}  Head {head_id}")
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-            fname = save_dir / f"layer{layer_id:02d}_head{head_id:02d}.png"
+            fname = save_dir / f"{safe_tag}_head{head_id:02d}.png"
             fig.savefig(fname, bbox_inches="tight")
             plt.close(fig)
+
             saved_paths.append(fname)
 
         if show_progress:
-            print(f"[save_attention_maps] Layer {layer_id} done "
-                  f"({heads} heads → {heads} images).")
+            print(f"[save_attention_maps] {tag!r}: {H} heads → {H} images")
 
     return saved_paths
 
