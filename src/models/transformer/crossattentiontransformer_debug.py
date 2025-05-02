@@ -21,11 +21,13 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False
     ) -> Tensor:
+        # Explicitly request full per-head weights
         out, weights = self.self_attn(
             x, x, x,
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
             need_weights=(self._attn_buffer is not None),
+            average_attn_weights=False,
             is_causal=is_causal
         )
         if self._attn_buffer is not None:
@@ -41,7 +43,7 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         if not return_attn:
-            # Use the built-in fastpath when not collecting maps
+            # Use fast path when not collecting maps
             return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
         # Otherwise force Python fallback and collect
