@@ -57,20 +57,20 @@ class CARAEncoder(TATEREncoder):
 
             seq, tok, res_seq, res_tok, attn_records = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
 
-                # visualise first item in batch
-                # see / save the first few heat-maps
-                paths = save_attention_maps(
-                    attn_data=attn_records,
-                    save_dir="all_attention_maps",
-                    batch_idx=0,
-                    vmax=None,
-                    cmap="viridis",
-                    dpi=150,
-                    show_progress=True
-                )
-                print("Done!  Images are in ./my_maps/")
+            # visualise first item in batch
+            # see / save the first few heat-maps
+            paths = save_attention_maps(
+                attn_data=attn_records,
+                save_dir="all_attention_maps",
+                batch_idx=0,
+                vmax=None,
+                cmap="viridis",
+                dpi=150,
+                show_progress=True
+            )
+            print("Done!  Images are in ./my_maps/")
 
-                print(kill_me_lol)
+            print(kill_me_lol)
         else:
             exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
         
