@@ -2217,20 +2217,18 @@ class TATERTrainerParallel(SmirkTrainer):
             exp_pretrain_dict = torch.load(self.config.arch.TATER.Expression.pretrain_path, map_location=device)
 
             exp_encoder_state = strip_exact_prefix(exp_pretrain_dict, "tater.expression_encoder.")
+            exp_transformer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_transformer.")
+            exp_layer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer.")
+            exp_layer_down_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer_down.")
+
             self.tater.expression_encoder.load_state_dict(exp_encoder_state, strict=False)
-
+            self.tater.exp_transformer.load_state_dict(exp_transformer_state, strict=False)
+            self.tater.exp_layer.load_state_dict(exp_layer_state, strict=False)
+            self.tater.exp_layer_down.load_state_dict(exp_layer_down_state, strict=False)
+            
             if self.tater.exp_use_audio:
-                exp_transformer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_transformer.attention_blocks.")
-                exp_layer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer.")
-
-                self.tater.exp_transformer.inject_weights_into_encoder_1(exp_transformer_state)
-                self.tater.residual_linear.load_state_dict(exp_layer_state, strict=False)
-            else:
-                exp_transformer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_transformer.")
-                exp_layer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer.")
-                
-                self.tater.exp_transformer.load_state_dict(exp_transformer_state, strict=False)
-                self.tater.exp_layer.load_state_dict(exp_layer_state, strict=False)
+                exp_layer_down_audio_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer_audio_down.")
+                self.tater.exp_layer_audio_down.load_state_dict(exp_layer_down_audio_state, strict=False)
         
         if self.config.arch.TATER.Shape.pretrain_path:
             # print(self.tater.shape_encoder.shape_layers[0].weight)
