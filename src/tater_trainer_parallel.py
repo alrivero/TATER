@@ -2223,14 +2223,14 @@ class TATERTrainerParallel(SmirkTrainer):
             exp_layer_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer.")
             exp_layer_down_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer_down.")
 
-            self.tater.expression_encoder.load_state_dict(exp_encoder_state, strict=False)
-            self.tater.exp_transformer.load_state_dict(exp_transformer_state, strict=False)
-            self.tater.exp_layer.load_state_dict(exp_layer_state, strict=False)
-            self.tater.exp_layer_down.load_state_dict(exp_layer_down_state, strict=False)
+            self.tater.expression_encoder.load_state_dict(exp_encoder_state, strict=True)
+            self.tater.exp_transformer.load_state_dict(exp_transformer_state, strict=True)
+            self.tater.exp_layer.load_state_dict(exp_layer_state, strict=True)
+            self.tater.exp_layer_down.load_state_dict(exp_layer_down_state, strict=True)
             
             if self.tater.exp_use_audio:
                 exp_layer_down_audio_state = strip_exact_prefix(exp_pretrain_dict, "tater.exp_layer_audio_down.")
-                self.tater.exp_layer_audio_down.load_state_dict(exp_layer_down_audio_state, strict=False)
+                self.tater.exp_layer_audio_down.load_state_dict(exp_layer_down_audio_state, strict=True)
         
         if self.config.arch.TATER.Shape.pretrain_path:
             # print(self.tater.shape_encoder.shape_layers[0].weight)
@@ -2239,9 +2239,9 @@ class TATERTrainerParallel(SmirkTrainer):
             shape_transformer_state = strip_exact_prefix(shape_pretrain_dict, "tater.shape_transformer.")
             shape_layer_state = strip_exact_prefix(shape_pretrain_dict, "tater.shape_layer.")
             
-            self.tater.shape_encoder.load_state_dict(shape_encoder_state, strict=False)
-            self.tater.shape_transformer.load_state_dict(shape_transformer_state, strict=False)
-            self.tater.shape_layer.load_state_dict(shape_layer_state, strict=False)
+            self.tater.shape_encoder.load_state_dict(shape_encoder_state, strict=True)
+            self.tater.shape_transformer.load_state_dict(shape_transformer_state, strict=True)
+            self.tater.shape_layer.load_state_dict(shape_layer_state, strict=True)
             # print(self.tater.shape_encoder.shape_layers[0].weight)
 
         if self.config.arch.TATER.Pose.pretrain_path:
@@ -2250,9 +2250,9 @@ class TATERTrainerParallel(SmirkTrainer):
             pose_transformer_state = strip_exact_prefix(pose_pretrain_dict, "tater.pose_transformer.")
             pose_layer_state = strip_exact_prefix(pose_pretrain_dict, "tater.pose_layer.")
             
-            self.tater.pose_encoder.load_state_dict(pose_encoder_state, strict=False)
-            self.tater.pose_transformer.load_state_dict(pose_transformer_state, strict=False)
-            self.tater.pose_layer.load_state_dict(pose_layer_state, strict=False)
+            self.tater.pose_encoder.load_state_dict(pose_encoder_state, strict=True)
+            self.tater.pose_transformer.load_state_dict(pose_transformer_state, strict=True)
+            self.tater.pose_layer.load_state_dict(pose_layer_state, strict=True)
 
         self.discriminator.requires_grad_(False).to(self.device)
         with open_url(self.D_cfg.load_path) as f:
