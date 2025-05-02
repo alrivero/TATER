@@ -1,8 +1,13 @@
+import os
+import re
+from pathlib import Path
+from typing import Optional, Callable, List, Tuple, Union, Sequence
+
 import torch
 from torch import nn, Tensor
 from torch.nn.functional import pad
 import torch.nn.functional as F
-from typing import Optional, Callable, List, Tuple, Union
+import matplotlib.pyplot as plt
 from .positional_embeddings.sinusoidalpositionalencoding import SinusoidalPositionalEncoding
 
 # ---------------------------------------------------------------- #
@@ -21,7 +26,6 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False
     ) -> Tensor:
-        # Explicitly request full per-head weights
         out, weights = self.self_attn(
             x, x, x,
             attn_mask=attn_mask,
@@ -43,12 +47,10 @@ class TransformerEncoderLayerWithMaps(nn.TransformerEncoderLayer):
         return_attn: bool = False
     ) -> Union[Tensor, Tuple[Tensor, List[Tensor]]]:
         if not return_attn:
-            # Use fast path when not collecting maps
             return super().forward(src, src_mask, src_key_padding_mask, is_causal)
 
-        # Otherwise force Python fallback and collect
+        # Python‐fallback path, collect weights
         self._attn_buffer = []
-
         src_key_padding_mask = F._canonical_mask(
             mask=src_key_padding_mask,
             mask_name="src_key_padding_mask",
@@ -177,19 +179,22 @@ class TransformerEncoderLayerWithCrossAttention(nn.Module):
 
 
 # ---------------------------------------------------------------- #
-# 3) CrossAttentionTransformer integrating both subclasses
+# 3) CrossAttentionTransformer with K learnable pooling queries
 # ---------------------------------------------------------------- #
 class CrossAttentionTransformer(nn.Module):
-    def __init__(self, conf):
+    def __init__(self, conf, K: int = 2):
         super().__init__()
 
+        # existing config
         self.encode_layers = conf.num_layers
         self.cross_layers  = conf.cross_layers
         self.concat_layers = conf.concat_layers
+
         d1 = conf.attention.d_model_1
         d2 = conf.attention.d_model_2
         dC = conf.attention.d_model_C
         assert dC == d1 + d2, "d_model_C must equal d_model_1 + d_model_2"
+
         df1, df2, dfC = (
             conf.attention.dim_feedforward_1,
             conf.attention.dim_feedforward_2,
@@ -207,83 +212,69 @@ class CrossAttentionTransformer(nn.Module):
             self.positional_embedding_1 = None
             self.positional_embedding_2 = None
 
-        # ─── Stage 1 ─── use TransformerEncoderLayerWithMaps ──────────
+        # Stage 1 streams
         self.encoder_1 = nn.ModuleList([
-            TransformerEncoderLayerWithMaps(
-                d1, nhead,
-                dim_feedforward=df1,
-                dropout=dropout,
-                batch_first=True,
-                activation=act
-            )
+            TransformerEncoderLayerWithMaps(d1, nhead, dim_feedforward=df1,
+                                           dropout=dropout, batch_first=True, activation=act)
             for _ in range(self.encode_layers)
         ])
         self.encoder_2 = nn.ModuleList([
-            TransformerEncoderLayerWithMaps(
-                d2, nhead,
-                dim_feedforward=df2,
-                dropout=dropout,
-                batch_first=True,
-                activation=act
-            )
+            TransformerEncoderLayerWithMaps(d2, nhead, dim_feedforward=df2,
+                                           dropout=dropout, batch_first=True, activation=act)
             for _ in range(self.encode_layers)
         ])
 
-        # ─── Stage 2 ─── custom cross-attention ──────────────────────
+        # Stage 2 cross-attention
         self.encoder_1_cross_layers = nn.ModuleList([
-            TransformerEncoderLayerWithCrossAttention(
-                d1, nhead,
-                dim_feedforward=df1,
-                dropout=dropout,
-                activation=act,
-                batch_first=True
-            )
+            TransformerEncoderLayerWithCrossAttention(d1, nhead, dim_feedforward=df1,
+                                                      dropout=dropout, activation=act,
+                                                      batch_first=True)
             for _ in range(self.cross_layers)
         ])
         self.encoder_2_cross_layers = nn.ModuleList([
-            TransformerEncoderLayerWithCrossAttention(
-                d2, nhead,
-                dim_feedforward=df2,
-                dropout=dropout,
-                activation=act,
-                batch_first=True
-            )
+            TransformerEncoderLayerWithCrossAttention(d2, nhead, dim_feedforward=df2,
+                                                      dropout=dropout, activation=act,
+                                                      batch_first=True)
             for _ in range(self.cross_layers)
         ])
 
-        # ─── Stage 3 ─── again TransformerEncoderLayerWithMaps ──────
+        # Stage 3 concat
         self.concat_layers = nn.ModuleList([
-            TransformerEncoderLayerWithMaps(
-                dC, nhead,
-                dim_feedforward=dfC,
-                dropout=dropout,
-                batch_first=True,
-                activation=act
-            )
+            TransformerEncoderLayerWithMaps(dC, nhead, dim_feedforward=dfC,
+                                           dropout=dropout, batch_first=True, activation=act)
             for _ in range(self.concat_layers)
         ])
 
-        # Eval & mask tokens
-        self.eval_token_1        = nn.Parameter(torch.rand(1,1,d1))
-        self.eval_token_2        = nn.Parameter(torch.rand(1,1,d2))
+        # Token-masking params (unchanged)
         self.mask_token_1        = nn.Parameter(torch.rand(d1))
         self.mask_token_2        = nn.Parameter(torch.rand(d2))
         self.encoder_1_mask_rate = conf.encoder_1_mask_rate
         self.encoder_2_mask_rate = conf.encoder_2_mask_rate
-        self.final_dropout       = nn.Dropout(conf.final_dropout.prob) if conf.final_dropout.enable else None
+
+        # NEW: K pooling queries
+        self.K           = K
+        self.pool_tokens = nn.Parameter(torch.randn(1, K, dC))
+        self.pool_attn   = nn.MultiheadAttention(
+            embed_dim=dC, num_heads=nhead, dropout=dropout, batch_first=True
+        )
+
+        self.final_dropout = nn.Dropout(conf.final_dropout.prob) \
+            if conf.final_dropout.enable else None
 
     def forward(
         self,
-        x1: torch.Tensor,
-        x2: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        x1: Tensor,
+        x2: Tensor,
+        attention_mask: Optional[Tensor] = None,
         series_len: Optional[int] = None,
-        token_mask: Optional[torch.Tensor] = None,
+        token_mask: Optional[Tensor] = None,
         return_attn: bool = False
     ):
+        # init buffer if visualizing
         self._attn_buf = [] if return_attn else None
         B = x1.size(0)
 
+        # make pad mask boolean
         if attention_mask is not None:
             attention_mask = attention_mask.to(torch.bool)
 
@@ -299,119 +290,74 @@ class CrossAttentionTransformer(nn.Module):
             x1[m1] = self.mask_token_1
             x2[m2] = self.mask_token_2
 
-        # append eval tokens
-        x1 = torch.cat([x1, self.eval_token_1.expand(B, -1, -1)], dim=1)
-        x2 = torch.cat([x2, self.eval_token_2.expand(B, -1, -1)], dim=1)
-        if attention_mask is not None:
-            attention_mask = pad(attention_mask, (0, 1), value=False)
-
-        # ─── Stage 1 ─────────────────────────────────────────────
+        # Stage 1
         for i, layer in enumerate(self.encoder_1):
             if return_attn:
-                x1, maps = layer(
-                    x1,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False,
-                    return_attn=True
-                )
+                x1, maps = layer(x1, src_mask=None,
+                                 src_key_padding_mask=attention_mask,
+                                 is_causal=False, return_attn=True)
                 for w in maps:
                     self._attn_buf.append((f"encoder_1.{i}.self_attn", w))
             else:
-                x1 = layer(
-                    x1,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False
-                )
-
+                x1 = layer(x1, src_mask=None,
+                           src_key_padding_mask=attention_mask,
+                           is_causal=False)
         for i, layer in enumerate(self.encoder_2):
             if return_attn:
-                x2, maps = layer(
-                    x2,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False,
-                    return_attn=True
-                )
+                x2, maps = layer(x2, src_mask=None,
+                                 src_key_padding_mask=attention_mask,
+                                 is_causal=False, return_attn=True)
                 for w in maps:
                     self._attn_buf.append((f"encoder_2.{i}.self_attn", w))
             else:
-                x2 = layer(
-                    x2,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False
-                )
+                x2 = layer(x2, src_mask=None,
+                           src_key_padding_mask=attention_mask,
+                           is_causal=False)
 
-        x1_residual = x1
-
-        # ─── Stage 2 ─────────────────────────────────────────────
+        # Stage 2
         for i in range(self.cross_layers):
             tag = f"cross_L{i}"
             x1 = self.encoder_1_cross_layers[i].forward_self_attention(
                 x1, src_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=f"{tag}_x1"
-            )
+                attn_store=self._attn_buf, scope=f"{tag}_x1")
             x2 = self.encoder_2_cross_layers[i].forward_self_attention(
                 x2, src_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=f"{tag}_x2"
-            )
+                attn_store=self._attn_buf, scope=f"{tag}_x2")
             x1 = self.encoder_1_cross_layers[i].forward_cross_attention(
                 x1, memory=x2, memory_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=tag, direction="x1→x2"
-            )
+                attn_store=self._attn_buf, scope=tag, direction="x1→x2")
             x2 = self.encoder_2_cross_layers[i].forward_cross_attention(
                 x2, memory=x1, memory_key_padding_mask=attention_mask,
-                attn_store=self._attn_buf, scope=tag, direction="x2→x1"
-            )
+                attn_store=self._attn_buf, scope=tag, direction="x2→x1")
             x1 = self.encoder_1_cross_layers[i].forward_feedforward(x1)
             x2 = self.encoder_2_cross_layers[i].forward_feedforward(x2)
 
-        # ─── Stage 3 ─────────────────────────────────────────────
+        # Stage 3
         x = torch.cat([x1, x2], dim=-1)
         for i, layer in enumerate(self.concat_layers):
             if return_attn:
-                x, maps = layer(
-                    x,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False,
-                    return_attn=True
-                )
+                x, maps = layer(x, src_mask=None,
+                                src_key_padding_mask=attention_mask,
+                                is_causal=False, return_attn=True)
                 for w in maps:
                     self._attn_buf.append((f"concat_layers.{i}.self_attn", w))
             else:
-                x = layer(
-                    x,
-                    src_mask=None,
-                    src_key_padding_mask=attention_mask,
-                    is_causal=False
-                )
+                x = layer(x, src_mask=None,
+                           src_key_padding_mask=attention_mask,
+                           is_causal=False)
 
+        # final dropout
         if self.final_dropout is not None:
             x = self.final_dropout(x)
-            x1_residual = self.final_dropout(x1_residual)
 
-        outputs = (x[:, :-1], x[:, -1:], x1_residual[:, :-1], x1_residual[:, -1:])
-        attn_out = self._attn_buf
-        self._attn_buf = None
-        return (*outputs, attn_out) if return_attn else outputs
+        # ─── NEW: K-query pooling ─────────────────────────────────────
+        # x: (B, T, dC)
+        queries = self.pool_tokens.expand(B, -1, -1)      # (B, K, dC)
+        pooled, pool_attn_weights = self.pool_attn(queries, x, x)  # (B, K, dC), (B, K, T)
+        pooled_flat = pooled.reshape(B, -1)               # (B, K*dC)
 
-    def inject_weights_into_encoder_1(self, weight_dict: dict):
-        num_layers = len(self.encoder_1)
-        for i in range(num_layers):
-            self.encoder_1[i].load_state_dict({
-                "self_attn.in_proj_weight":  weight_dict[f"{i}.self_attn.in_proj_weight"],
-                "self_attn.in_proj_bias":    weight_dict[f"{i}.self_attn.in_proj_bias"],
-                "self_attn.out_proj.weight": weight_dict[f"{i}.self_attn.out_proj.weight"],
-                "self_attn.out_proj.bias":   weight_dict[f"{i}.self_attn.out_proj.bias"],
-                "linear1.weight":            weight_dict[f"{i}.linear1.weight"],
-                "linear1.bias":              weight_dict[f"{i}.linear1.bias"],
-                "linear2.weight":            weight_dict[f"{i}.linear2.weight"],
-                "linear2.bias":              weight_dict[f"{i}.linear2.bias"],
-                "norm1.weight":              weight_dict[f"{i}.norm1.weight"],
-                "norm1.bias":                weight_dict[f"{i}.norm1.bias"],
-                "norm2.weight":              weight_dict[f"{i}.norm2.weight"],
-                "norm2.bias":                weight_dict[f"{i}.norm2.bias"],
-            })
+        if return_attn:
+            # return both layer-wise maps and pooling maps
+            return pooled_flat, self._attn_buf, pool_attn_weights
+        else:
+            return pooled_flat
