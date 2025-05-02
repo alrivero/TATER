@@ -301,7 +301,7 @@ class CARAAffectTrainer(BaseTrainer):
         huber = self.HuberLoss(affect_scores, affect_scores_gt)
 
         # Decide training loss
-        loss = mse
+        loss = huber
 
         # Pearson metrics
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
