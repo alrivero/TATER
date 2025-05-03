@@ -319,9 +319,12 @@ class CARAAffectTrainer(BaseTrainer):
 
         # log metrics
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
+        p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
         losses.update({
             "Pearson r V": r_v,
             "Pearson r A": r_a,
+            "Pearson p V": p_v,
+            "Pearson p A": p_a,
             "MSE": mse,
             "Huber": huber,
             "CCC_loss": ccc_l,
