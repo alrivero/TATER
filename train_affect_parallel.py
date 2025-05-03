@@ -13,8 +13,9 @@ from datasets.data_utils import load_dataloaders_parallel
 from torch.distributed import get_rank, is_initialized
 from src.utils import metrics
 import traceback
+import math
 
-# If you see CUDA-in-fork hangs, uncomment the next two lines:
+# If you see CUDA-in-fork hangs, uncomment:
 # import torch.multiprocessing as mp
 # mp.set_start_method('spawn', force=True)
 
@@ -66,7 +67,6 @@ def train(rank, world_size, config):
         os.makedirs(config.train.log_path, exist_ok=True)
         os.makedirs(os.path.join(config.train.log_path, 'train_images'), exist_ok=True)
         os.makedirs(os.path.join(config.train.log_path, 'val_images'), exist_ok=True)
-        # directory for shard files
         os.makedirs(os.path.join(config.train.log_path, 'val_shards'), exist_ok=True)
         OmegaConf.save(config, os.path.join(config.train.log_path, 'config.yaml'))
 
@@ -89,14 +89,21 @@ def train(rank, world_size, config):
     trainer = torch.nn.parallel.DistributedDataParallel(trainer, device_ids=[rank])
 
     # 6) data loaders
-    train_loader, val_loader, effective_seg_count = load_dataloaders_parallel(
+    train_loader, val_loader, _ = load_dataloaders_parallel(
         config, rank, world_size
     )
+
+    # --- configure optimizer + scheduler ONCE for the whole run ---
+    batches_per_epoch = len(train_loader)
+    steps_per_epoch  = math.ceil(batches_per_epoch / config.train.accumulate_steps)
+    total_steps      = steps_per_epoch * config.train.num_epochs
+    trainer.module.optimizer, trainer.module.scheduler = \
+        trainer.module.configure_optimizers(total_steps)
+    # -------------------------------------------------------------------
 
     # ---------------- Training & Validation ----------------
     for epoch in range(config.train.resume_epoch, config.train.num_epochs):
         train_loader.sampler.set_epoch(epoch)
-        trainer.module.configure_optimizers(effective_seg_count, epoch != 0)
 
         for phase in ('train', 'val'):
             loader = val_loader if phase == 'val' else train_loader
@@ -123,6 +130,7 @@ def train(rank, world_size, config):
                         elif torch.is_tensor(v):
                             batch[k] = v.to(rank)
 
+                    # step handles forward, backward, clipping, optimizer.step(), scheduler.step(), zero_grad()
                     out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
 
                     if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
@@ -133,22 +141,16 @@ def train(rank, world_size, config):
                         all_gt.append(out['valence_arousal_gt'].detach().cpu().numpy())
                         all_vids.extend(batch['video_ID'])
 
-                    if rank == 0 and batch_idx % 5 == 0:
+                    if rank == 0 and phase == 'train' and batch_idx % 5 == 0:
                         print(out['valence_arousal_out'])
                         print(out['valence_arousal_gt'])
-                        # print(out['grad_norm_total'])
-                        # # print(
-                        # #     out['base_encode'].std(dim=1),
-                        # #     out['base_encode'].std(dim=1).shape,
-                        # #     out['base_encode'].mean(dim=1),
-                        # #     out['base_encode'].mean(dim=1).shape)
+
                 except Exception as e:
                     if rank == 0:
                         print(f"Error loading batch_idx {batch_idx}!")
-                        error_message = traceback.format_exc()
-                        print(f"Error captured: {error_message}")
-                        print(e)
+                        print(traceback.format_exc())
 
+                # save checkpoints during training
                 if phase == 'train' and rank == 0 and (
                     batch_idx % config.train.save_every == 0 or batch_idx == len(loader) - 1
                 ):
@@ -160,27 +162,18 @@ def train(rank, world_size, config):
             # end batch loop
 
             if phase == 'val':
-                # ---- NEW: shard to disk + gather via filesystem ----
-
-                # 1) turn lists into numpy arrays
-                local_out = np.concatenate(all_out, axis=0)      # shape [N_i, D]
+                # ---- shard to disk + gather via filesystem ----
+                local_out = np.concatenate(all_out, axis=0)
                 local_gt  = np.concatenate(all_gt,  axis=0)
-                local_vid = np.array(all_vids, dtype=np.int64).flatten()   # shape [N_i]
+                local_vid = np.array(all_vids, dtype=np.int64).flatten()
 
-                print("Starting")
-
-                # 2) write out this rank's shard
                 shard_dir = os.path.join(config.train.log_path, "val_shards")
                 os.makedirs(shard_dir, exist_ok=True)
                 shard_path = os.path.join(shard_dir, f"epoch{epoch}_rank{rank}.npz")
                 np.savez(shard_path, out=local_out, gt=local_gt, vid=local_vid)
 
-                print("HERE")
-
-                # 3) sync so all shards are written
                 dist.barrier()
 
-                # 4) rank 0 reads & processes all shards
                 if rank == 0:
                     files = sorted(f for f in os.listdir(shard_dir) if f.endswith(".npz"))
                     outs_list, gts_list, vids_list = [], [], []
@@ -190,13 +183,10 @@ def train(rank, world_size, config):
                         gts_list.append(data["gt"])
                         vids_list.append(data["vid"])
 
-                    print("sorted")
-
                     arr_out = np.concatenate(outs_list, axis=0)
                     arr_gt  = np.concatenate(gts_list,  axis=0)
                     arr_vid = np.concatenate(vids_list, axis=0)
 
-                    # compute metrics as before
                     n_dims = arr_out.shape[-1]
                     metrics_out = []
 
@@ -234,7 +224,6 @@ def train(rank, world_size, config):
                         metrics_arr
                     )
 
-                    # 5) clean up shard files
                     for fname in files:
                         os.remove(os.path.join(shard_dir, fname))
 

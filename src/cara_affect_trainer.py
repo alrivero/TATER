@@ -74,17 +74,30 @@ class CARAAffectTrainer(BaseTrainer):
                 wandb.log(wandb_log_data)
 
     def configure_optimizers(self, num_steps, use_default_annealing=False):
-        # Adjust total steps for gradient accumulation
-        effective_total_steps = num_steps // self.config.train.accumulate_steps // self.config.train.batch_size
+        """
+        AdamW + linear warmup → cosine decay scheduler.
+        Warmup is a fraction of total steps (default 10%).
+        """
 
-        # Define max_lr, min_lr, and warmup steps directly from config
-        max_lr = self.config.train.max_lr  # Use max_lr as defined in config
-        gen_max_lr = self.config.train.max_lr  # Use unscaled LR values for generator
+        # 1) Compute actual optimizer steps
+        effective_steps = (
+            num_steps
+            // self.config.train.accumulate_steps
+            // self.config.train.batch_size
+        )
 
-        # Encoder Optimizer setup
+        # 2) Your LR bounds
+        max_lr = self.config.train.max_lr
+        min_lr = getattr(self.config.train, "min_lr", max_lr * 0.1)
+
+        # 3) Warmup ratio & steps (e.g. 10% of total steps)
+        warmup_ratio = getattr(self.config.train, "warmup_ratio", 0.1)
+        warmup_steps = max(1, int(effective_steps * warmup_ratio))
+
+        # 4) Collect parameters
         params = []
         if self.config.train.optimize_base_expression:
-            params += list(self.tater.expression_encoder.parameters()) 
+            params += list(self.tater.expression_encoder.parameters())
         if self.config.train.optimize_tater:
             if not self.config.arch.TATER.Expression.use_base_encoder:
                 params += list(self.tater.exp_transformer.parameters())
@@ -96,11 +109,27 @@ class CARAAffectTrainer(BaseTrainer):
                     params += list(self.tater.residual_linear.parameters())
         params += list(self.affect_decoder.parameters())
 
-        # Initialize the encoder optimizer
-        self.optimizer = torch.optim.Adam(params, lr=max_lr)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=effective_total_steps, eta_min=gen_max_lr
+        # 5) AdamW at max_lr
+        self.optimizer = torch.optim.AdamW(params, lr=max_lr)
+
+        # 6) Build the LR‐multiplier function
+        ratio = min_lr / max_lr
+        def lr_lambda(step: int):
+            if step < warmup_steps:
+                # ramp from ratio → 1.0
+                return ratio + (1.0 - ratio) * (step / warmup_steps)
+            else:
+                # cosine decay from 1.0 → ratio
+                progress = (step - warmup_steps) / float(max(1, effective_steps - warmup_steps))
+                return ratio + (1.0 - ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        # 7) Attach LambdaLR
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.optimizer,
+            lr_lambda=lr_lambda
         )
+
+        return self.optimizer, self.scheduler
 
     def scheduler_step(self):
         self.scheduler.step()
