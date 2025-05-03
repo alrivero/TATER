@@ -412,7 +412,7 @@ class CARAAffectTrainer(BaseTrainer):
             # ————————————————————————————————
 
             # gradient clipping
-            max_norm = getattr(self.config.train, "max_grad_norm", 1.0)
+            max_norm = 1.0
             torch.nn.utils.clip_grad_norm_(
                 itertools.chain(self.tater.parameters(),
                                 self.affect_decoder.parameters()),
