@@ -291,45 +291,54 @@ class CARAAffectTrainer(BaseTrainer):
             'nrmse_std': nrmse_std.item()
         }
     
+    def ccc_loss(self, y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        """
+        1 - Concordance Correlation Coefficient as a loss.
+        """
+        mu_p = y_pred.mean(dim=0)
+        mu_t = y_true.mean(dim=0)
+        cov  = ((y_pred - mu_p) * (y_true - mu_t)).mean(dim=0)
+        var_p = ((y_pred - mu_p)**2).mean(dim=0)
+        var_t = ((y_true - mu_t)**2).mean(dim=0)
+        ccc = 2 * cov / (var_p + var_t + (mu_p - mu_t)**2 + eps)
+        # shape [2], one for valence and arousal
+        return 1 - ccc.mean()  # scalar loss
+    
     def step1(self, batch, affect_scores, batch_idx, series_len):
         losses = {}
-        # Stack ground-truth valence-arousal into (B, N)
-        affect_scores_gt = torch.cat([x[None] for x in batch["valence_arousal"]], dim=0)
+        affect_scores_gt = torch.stack(batch["valence_arousal"], dim=0)  # (B,2)
 
-        # Compute primary losses
-        mse = self.MSELoss(affect_scores, affect_scores_gt)
+        # compute raw losses
+        mse   = self.MSELoss(affect_scores, affect_scores_gt)
         huber = self.HuberLoss(affect_scores, affect_scores_gt)
+        ccc_l = self.ccc_loss(affect_scores, affect_scores_gt)
 
-        # Decide training loss
-        loss = huber
+        # mix them: λ_cc*(1-CCC) + (1-λ_cc)*Huber
+        λ_cc = 0.5
+        loss = λ_cc * ccc_l + (1 - λ_cc) * huber
 
-        # Pearson metrics
+        # log metrics
         r_v, r_a = self.pearson_r(affect_scores, affect_scores_gt)
-        p_v, p_a = self.pearson_p(affect_scores, affect_scores_gt)
+        losses.update({
+            "Pearson r V": r_v,
+            "Pearson r A": r_a,
+            "MSE": mse,
+            "Huber": huber,
+            "CCC_loss": ccc_l,
+            "TrainLoss": loss
+        })
 
-        # Populate basic metrics
-        losses["Pearson r V"] = r_v
-        losses["Pearson r A"] = r_a
-        losses["p-value V"]  = p_v
-        losses["p-value A"]  = p_a
-        losses["MSE"]         = mse
-        losses["Huber"]       = huber
-        losses["Unique"]      = len(torch.unique(affect_scores))
-        losses["A_avg"]       = affect_scores[:, 0].mean()
-        losses["V_avg"]       = affect_scores[:, 1].mean()
-        losses["A_var"]       = affect_scores[:, 0].var(unbiased=False)
-        losses["V_var"]       = affect_scores[:, 1].var(unbiased=False)
-
-        # Add relative performance metrics (not used for backprop)
+        # relative performance
         rel = self.relative_performance(affect_scores, affect_scores_gt)
-        losses["Rel MSE"]         = rel['mse']
-        losses["Rel RMSE"]        = rel['rmse']
-        losses["Rel R2"]          = rel['r2']
-        losses["Rel NRMSE_range"] = rel['nrmse_range']
-        losses["Rel NRMSE_std"]   = rel['nrmse_std']
+        losses.update({
+            "Rel MSE": rel['mse'],
+            "Rel RMSE": rel['rmse'],
+            "Rel R2": rel['r2'],
+            "Rel NRMSE_range": rel['nrmse_range'],
+            "Rel NRMSE_std": rel['nrmse_std'],
+        })
 
-        outputs = {}
-        return outputs, losses, loss
+        return {}, losses, loss
     
     def create_base_encoder(self):
         self.base_exp_encoder = copy.deepcopy(self.tater.expression_encoder)
@@ -389,6 +398,14 @@ class CARAAffectTrainer(BaseTrainer):
             self.optimizers_zero_grad()  # Zero the gradients
             loss.backward()  # Accumulate gradients
 
+            # gradient clipping
+            max_norm = getattr(self.config.train, "max_grad_norm", 1.0)
+            torch.nn.utils.clip_grad_norm_(
+                itertools.chain(self.tater.parameters(),
+                                self.affect_decoder.parameters()),
+                max_norm
+            )
+
             # ——— NEW: compute gradient norms ———
             total_norm_sq = 0.0
             # iterate over all parameters you care about
@@ -399,7 +416,7 @@ class CARAAffectTrainer(BaseTrainer):
                     total_norm_sq += param_norm.item() ** 2
             total_grad_norm = total_norm_sq ** 0.5
             # stick it into outputs for logging/printing downstream
-            outputs['grad_norm_total'] = total_grad_norm
+            losses['grad_norm_total'] = total_grad_norm
             # ————————————————————————————————
             
             if (batch_idx + 1) % self.accumulate_steps == 0:
