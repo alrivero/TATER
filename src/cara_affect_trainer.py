@@ -323,8 +323,8 @@ class CARAAffectTrainer(BaseTrainer):
         losses.update({
             "Pearson r V": r_v,
             "Pearson r A": r_a,
-            "Pearson p V": p_v,
-            "Pearson p A": p_a,
+            "p-value V": p_v,
+            "p-value A": p_a,
             "MSE": mse,
             "Huber": huber,
             "CCC_loss": ccc_l,
