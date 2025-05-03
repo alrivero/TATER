@@ -5,7 +5,7 @@ class AffectDecoder(nn.Module):
         super().__init__()
 
         self.out_layer = nn.Linear(config.arch.TATER.Affect_Decoder.linear_size, 2)
-        # self.out_activation = nn.Sigmoid()
+        self.out_activation = nn.Tanh()
     
     def forward(self, x):
-        return self.out_layer(x)
+        return self.out_activation(self.out_layer(x))

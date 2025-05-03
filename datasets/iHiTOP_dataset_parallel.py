@@ -395,8 +395,23 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         if len(video_dict["valence_arousal"]) != 2:
             raise Exception
         
-        video_dict["valence_arousal"][0] = (video_dict["valence_arousal"][0] - VALENCE_AVG) / (VALENCE_STD)
-        video_dict["valence_arousal"][1] = (video_dict["valence_arousal"][1] - AROUSAL_AVG) / (AROUSAL_STD)
+        # ─── Winsorize + scale to [−1, +1] ────────────────────────────
+        val, aro = video_dict["valence_arousal"]
+
+        # 5% / 95% quantiles you measured:
+        VAL_LO, VAL_HI = 4.13968526139254, 5.524581599547542
+        ARO_LO, ARO_HI = 1.8318294910084734, 3.1810020551011395
+
+        # 1) clip to the quantile range
+        val = val.clamp(VAL_LO, VAL_HI)
+        aro = aro.clamp(ARO_LO, ARO_HI)
+
+        # 2) linearly rescale so that VAL_LO→−1 and VAL_HI→+1 (same for arousal)
+        val = (val - VAL_LO) / (VAL_HI - VAL_LO) * 2.0 - 1.0
+        aro = (aro - ARO_LO) / (ARO_HI - ARO_LO) * 2.0 - 1.0
+
+        video_dict["valence_arousal"][0] = val
+        video_dict["valence_arousal"][1] = aro
 
         # Gather all image data (subsample every N frames within start:end)
         N = 1
