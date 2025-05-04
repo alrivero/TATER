@@ -20,6 +20,16 @@ import math
 # import torch.multiprocessing as mp
 # mp.set_start_method('spawn', force=True)
 
+import warnings
+
+# suppress exactly that GaussNoise-in-ReplayCompose warning
+warnings.filterwarnings(
+    "ignore",
+    message=".*GaussNoise could work incorrectly in ReplayMode for other input data because its' params depend on targets.*",
+    category=UserWarning,
+    module=r"albumentations\.core\.transforms_interface"
+)
+
 def parse_args():
     conf = OmegaConf.load(sys.argv[1])
     OmegaConf.set_struct(conf, True)
