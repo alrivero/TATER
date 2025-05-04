@@ -548,85 +548,23 @@ def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
 
     return slices
 
-def cull_indices(hdf5_file_paths,
-                 seg_indices,
-                 config,
-                 slice_properties_path="slice_properties.pkl"):
-    """
-    Return every candidate slice in slice_properties, without any sampling.
-    """
+def cull_indices(slice_properties_path="sp.pkl"):
+    # Load your precomputed slice list
+    with open(slice_properties_path, "rb") as f:
+        slice_properties = pickle.load(f)
 
-    # 1) Group segment indices by file
-    seg_indices_by_file = {}
-    for file_idx, group_idx in seg_indices:
-        seg_indices_by_file.setdefault(int(file_idx), []).append(int(group_idx))
-
-    # 2) Load or compute slice_properties per file
-    if os.path.exists(slice_properties_path):
-        with open(slice_properties_path, "rb") as f:
-            slice_properties = pickle.load(f)
-        print(f"Loaded precomputed slice properties from {slice_properties_path}")
-    else:
-        slice_properties = {}
-        for file_idx, file_path in tqdm(enumerate(hdf5_file_paths),
-                                        desc="Processing HDF5 Files",
-                                        total=len(hdf5_file_paths)):
-            info = []
-            try:
-                with h5py.File(file_path, "r") as h5:
-                    for group_idx in seg_indices_by_file.get(file_idx, []):
-                        g = h5.get(str(group_idx), None)
-                        if g is None:
-                            continue
-
-                        # removed-frames threshold
-                        rem = g["removed_frames"].shape[0]
-                        img_len = g["img"].shape[0]
-                        total = img_len + rem
-                        if total > 0 and (rem / total) >= config.dataset.iHiTOP.removed_frames_threshold:
-                            continue
-
-                        # length filters
-                        if img_len < config.dataset.iHiTOP.min_seg_len or img_len > config.dataset.iHiTOP.max_seg_len:
-                            continue
-
-                        # compute overall variance only
-                        lm = g["landmarks_mp"][()]        # (T, N, 3)
-                        overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
-
-                        # record one slice: start=0, end=img_len
-                        info.append((
-                            img_len,          # slice_length
-                            overall_var,
-                            file_idx,
-                            group_idx,
-                            0,                # start frame
-                            img_len           # end frame
-                        ))
-            except Exception:
-                pass
-
-            slice_properties[file_idx] = info
-
-        # cache for next time
-        with open(slice_properties_path, "wb") as f:
-            pickle.dump(slice_properties, f)
-        print(f"Saved slice properties to {slice_properties_path}")
-
-    # 3) Flatten all slices into one big list
+    # Flatten and extract [file_idx, group_idx, start, end]
     all_slices = []
     for props in slice_properties.values():
-        all_slices.extend(props)
+        for tup in props:
+            # unpack 6- or 7-element tuples
+            if len(tup) == 6:
+                _, _, fidx, grp, s, e = tup
+            else:  # length 7
+                _, _, _, fidx, grp, s, e = tup
+            all_slices.append((fidx, grp, s, e))
 
-    if not all_slices:
-        # no candidates at all
-        return np.zeros((0, 4), dtype=int)
-
-    all_slices = np.array(all_slices)  # shape (M, 6)
-
-    # 4) Extract and return every [file_idx, group_idx, start, end]
-    data_idxs = all_slices[:, [2, 3, 4, 5]].astype(int)
-    return data_idxs
+    return np.array(all_slices, dtype=int)  # shape (190672, 4)
 
 # def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/12, 6/12), length_bias=1.0, variance_bias=10.0, slice_properties_path="slice_properties.pkl"):
 #     """
