@@ -574,7 +574,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
             seg_indices_by_file[file_idx] = []
         seg_indices_by_file[file_idx].append(int(group_idx))
 
-    max_img_length = 0
+        max_img_length = 0
     if os.path.exists(slice_properties_path):
         with open(slice_properties_path, "rb") as f:
             slice_properties = pickle.load(f)
@@ -582,73 +582,68 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
             max_img_length = pickle.load(f)
         print(f"Loaded precomputed slice properties from {slice_properties_path}")
     else:
-        # Compute slice properties and save them for reuse
-        hdf5_files = []
+        # Compute one “slice” per group (no overlapping sub-slices)
         slice_properties = {}
-        for file_idx, file_path in tqdm(enumerate(hdf5_file_paths), desc="Processing HDF5 Files"):
+        for file_idx, file_path in tqdm(enumerate(hdf5_file_paths),
+                                        desc="Processing HDF5 Files"):
             hdf5_file = h5py.File(file_path, "r")
-            hdf5_files.append(hdf5_file)
-
             slices_info = []
 
             for group_idx in seg_indices_by_file.get(file_idx, []):
-                group = hdf5_file[str(group_idx)]
-
                 try:
-                    required_keys = ["img", "landmarks_mp", "audio_phonemes", "hubert_frame_level_embeddings_v4", "valence_arousal"]
-                    if not all(key in group.keys() for key in required_keys):
+                    g = hdf5_file[str(group_idx)]
+                    # require these keys
+                    required = ["img", "landmarks_mp", "valence_arousal"]
+                    if not all(k in g.keys() for k in required):
+                        continue
+                    if len(g["valence_arousal"]) != 2:
                         continue
 
-                    if len(group["valence_arousal"]) != 2:
+                    # removed-frames threshold
+                    rem = g["removed_frames"].shape[0]
+                    img = g["img"].shape[0]
+                    total = img + rem
+                    if total > 0 and (rem / total) >= config.dataset.iHiTOP.removed_frames_threshold:
                         continue
 
-                    img_length = len(group["img"])
-                    removed_frames_length = len(group["removed_frames"])
-                    total_length = img_length + removed_frames_length
-                    removed_frames_percentage = removed_frames_length / total_length if total_length > 0 else 0
-
-                    if removed_frames_percentage >= config.dataset.iHiTOP.removed_frames_threshold:
-                        continue
-                    if img_length > config.dataset.iHiTOP.max_seg_len or img_length < config.dataset.iHiTOP.min_seg_len:
+                    # length filters
+                    if img < config.dataset.iHiTOP.min_seg_len or img > config.dataset.iHiTOP.max_seg_len:
                         continue
 
-                    # Generate slice indices
-                    idx_start = np.arange(math.ceil((img_length - config.train.split_overlap) /
-                                                    (config.train.max_batch_len - config.train.split_overlap)))
-                    idx_end = idx_start + 1
-                    idx_start *= (config.train.max_batch_len - config.train.split_overlap)
-                    idx_end *= (config.train.max_batch_len - config.train.split_overlap)
-                    idx_end += config.train.split_overlap
-                    idx_end = np.clip(idx_end, None, img_length)
+                    # now compute variances on the **entire** segment
+                    lm = g["landmarks_mp"][()]        # shape (T, N, 3)
+                    overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
+                    lip = np.concatenate([
+                        lm[:, mp_upper_inner_lip_idxs, :2],
+                        lm[:, mp_lower_inner_lip_idxs, :2]
+                    ], axis=1)
+                    mouth_var = np.var(lip, axis=(0, 1)).sum()
 
-                    for s, e in zip(idx_start, idx_end):
-                        slice_length = e - s
-                        landmarks = group["landmarks_mp"][s:e]
+                    # record a single slice from 0 → img
+                    slices_info.append((
+                        img,               # slice_length
+                        overall_var,
+                        mouth_var,
+                        file_idx,
+                        group_idx,
+                        0,                # start frame
+                        img               # end frame
+                    ))
 
-                        max_img_length = max(slice_length, max_img_length)
+                    max_img_length = max(max_img_length, img)
 
-                        overall_variance = np.var(landmarks, axis=(0, 1)).sum()
-                        lip_landmarks = np.concatenate([
-                            landmarks[:, mp_upper_inner_lip_idxs, :],
-                            landmarks[:, mp_lower_inner_lip_idxs, :]
-                        ], axis=1)
-                        mouth_variance = np.var(lip_landmarks, axis=(0, 1)).sum()
-                        slices_info.append((slice_length, overall_variance, mouth_variance, file_idx, group_idx, s, e))
-                except Exception as e:
+                except Exception:
                     continue
 
             slice_properties[file_idx] = slices_info
+            hdf5_file.close()
 
-        # Save slice properties
+        # cache for next time
         with open(slice_properties_path, "wb") as f:
             pickle.dump(slice_properties, f)
         with open("max_seg_len.pkl", "wb") as f:
             pickle.dump(np.array(max_img_length), f)
         print(f"Saved slice properties to {slice_properties_path}")
-
-        for hdf5_file in hdf5_files:
-            if hdf5_file is not None:
-                hdf5_file.close()
 
     # Sampling using heuristics
     remaining_cap = max_cap
@@ -707,9 +702,9 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                 # Sample a slice from the selected bin
                 if binned_slices[sampled_bin]:
                     heuristic = np.random.rand()
-                    if heuristic < heuristic_probs[0]:  # Random sampling
+                    if False:  # Random sampling
                         slice_idx = np.random.randint(len(binned_slices[sampled_bin]))
-                    elif heuristic < heuristic_probs[0] + heuristic_probs[1]:  # Mouth variance heuristic
+                    elif False
                         # Sort the bin by mouth variance before sampling
                         binned_slices[sampled_bin].sort(key=lambda x: x[2], reverse=True)
                         slice_idx = 0  # Select the highest mouth variance
