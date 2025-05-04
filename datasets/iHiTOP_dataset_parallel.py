@@ -39,9 +39,9 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
 
         self.framewise_keys = ["flag_landmarks_fan", "img", "img_mica", "landmarks_fan", "landmarks_mp", "mask", "hubert_frame_level_embeddings_v4"]
 
-        with open(config.dataset.valence_transform, 'rb') as f:
+        with open(config.dataset.iHiTOP.valence_transform, 'rb') as f:
             self.val_tf = pickle.load(f)
-        with open(config.dataset.arousal_transform, 'rb') as f:
+        with open(config.dataset.iHiTOP.arousal_transform, 'rb') as f:
             self.aro_tf = pickle.load(f)
 
     def _get_hdf5_file(self, file_idx):
