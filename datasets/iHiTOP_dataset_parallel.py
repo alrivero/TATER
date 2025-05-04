@@ -548,23 +548,13 @@ def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
 
     return slices
 
-import os
-import pickle
-import h5py
-import numpy as np
-from tqdm import tqdm
-from scipy.stats import skewnorm
-
 def cull_indices(hdf5_file_paths,
                  seg_indices,
                  config,
                  slice_properties_path="slice_properties.pkl"):
     """
-    Filters and generates valid indices for data slices from HDF5 files with a maximum cap,
-    using a skew-normal sampling strategy on slice length (and only overall variance for filtering).
+    Return every candidate slice in slice_properties, without any sampling.
     """
-
-    max_cap = config.dataset.iHiTOP.max_data_idxs
 
     # 1) Group segment indices by file
     seg_indices_by_file = {}
@@ -623,52 +613,19 @@ def cull_indices(hdf5_file_paths,
             pickle.dump(slice_properties, f)
         print(f"Saved slice properties to {slice_properties_path}")
 
-    # 3) Flatten all slices into one big array
+    # 3) Flatten all slices into one big list
     all_slices = []
     for props in slice_properties.values():
         all_slices.extend(props)
+
+    if not all_slices:
+        # no candidates at all
+        return np.zeros((0, 4), dtype=int)
+
     all_slices = np.array(all_slices)  # shape (M, 6)
-    if all_slices.shape[0] == 0:
-        return np.zeros((0, 4), dtype=int)
 
-    lengths     = all_slices[:, 0]
-    overall_var = all_slices[:, 1]
-
-    # 4) Build skew-normal distribution over lengths
-    desired_mean = getattr(config.dataset.iHiTOP, "skew_mean", 40)
-    skewness     = getattr(config.dataset.iHiTOP, "skewness", 0.7)
-    scale        = getattr(config.dataset.iHiTOP, "skew_scale", 25)
-    skew_dist = skewnorm(skewness, loc=desired_mean, scale=scale)
-    p_len = skew_dist.pdf(lengths)
-
-    # 5) Combine with variance if you like, or just use p_len alone
-    # Here we stick to length-only sampling as discussed:
-    weights = p_len
-
-    # Guard against all-zero weights
-    if weights.sum() == 0:
-        # fallback to uniform
-        weights = np.ones_like(weights)
-    weights /= weights.sum()
-
-    # 6) Ensure we don't request more samples than positive-weight entries
-    positive_count = np.count_nonzero(weights)
-    n_sample = min(max_cap, positive_count)
-
-    if n_sample == 0:
-        return np.zeros((0, 4), dtype=int)
-
-    chosen_idxs = np.random.choice(
-        len(weights),
-        size=n_sample,
-        replace=False,
-        p=weights
-    )
-
-    sampled = all_slices[chosen_idxs]  # shape (n_sample, 6)
-
-    # 7) Extract [file_idx, group_idx, start, end]
-    data_idxs = sampled[:, [2, 3, 4, 5]].astype(int)
+    # 4) Extract and return every [file_idx, group_idx, start, end]
+    data_idxs = all_slices[:, [2, 3, 4, 5]].astype(int)
     return data_idxs
 
 # def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/12, 6/12), length_bias=1.0, variance_bias=10.0, slice_properties_path="slice_properties.pkl"):
