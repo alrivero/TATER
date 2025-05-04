@@ -18,6 +18,7 @@ from torch.distributed import barrier, get_rank
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from scipy.stats import skewnorm
+import sklearn
 
 AROUSAL_AVG = 2.344899295396891
 AROUSAL_STD = 0.46212774076318297
@@ -37,6 +38,11 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         self.worker_hdf5_handles = None  # Initialize empty handles
 
         self.framewise_keys = ["flag_landmarks_fan", "img", "img_mica", "landmarks_fan", "landmarks_mp", "mask", "hubert_frame_level_embeddings_v4"]
+
+        with open(config.dataset.valence_transform, 'rb') as f:
+            self.val_tf = pickle.load(f)
+        with open(config.dataset.arousal_transform, 'rb') as f:
+            self.aro_tf = pickle.load(f)
 
     def _get_hdf5_file(self, file_idx):
         """Fetch the HDF5 file handle for the given index."""
@@ -391,27 +397,10 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict["audio_sample_rate"] = video_group.attrs["sample_rate"]
         video_dict["video_ID"] = v
 
-        video_dict["valence_arousal"] = torch.tensor(video_group["valence_arousal"][()])
-        if len(video_dict["valence_arousal"]) != 2:
-            raise Exception
-        
-        # ─── Winsorize + scale to [−1, +1] ────────────────────────────
-        val, aro = video_dict["valence_arousal"]
-
-        # 5% / 95% quantiles you measured:
-        VAL_LO, VAL_HI = 4.13968526139254, 5.524581599547542
-        ARO_LO, ARO_HI = 1.8318294910084734, 3.1810020551011395
-
-        # 1) clip to the quantile range
-        val = val.clamp(VAL_LO, VAL_HI)
-        aro = aro.clamp(ARO_LO, ARO_HI)
-
-        # 2) linearly rescale so that VAL_LO→−1 and VAL_HI→+1 (same for arousal)
-        val = (val - VAL_LO) / (VAL_HI - VAL_LO) * 2.0 - 1.0
-        aro = (aro - ARO_LO) / (ARO_HI - ARO_LO) * 2.0 - 1.0
-
-        video_dict["valence_arousal"][0] = val
-        video_dict["valence_arousal"][1] = aro
+        v_raw, a_raw = video_dict["valence_arousal"].tolist()
+        v_scaled = float(self.val_tf.transform([[v_raw]])[0,0])
+        a_scaled = float(self.aro_tf.transform([[a_raw]])[0,0])
+        video_dict["valence_arousal"] = torch.tensor([v_scaled, a_scaled], dtype=torch.float32)
 
         # Gather all image data (subsample every N frames within start:end)
         N = 1
