@@ -121,24 +121,24 @@ def train(rank, world_size, config):
                 dist.barrier()
                 try:
                     # move to GPU
-                    for k,v in batch.items():
+                    for k, v in batch.items():
                         if k in ('audio_phonemes','text_phonemes'): continue
-                        if isinstance(v,list) and len(v)>0 and torch.is_tensor(v[0]):
-                            batch[k]=[x.to(rank) for x in v]
+                        if isinstance(v, list) and len(v) > 0 and torch.is_tensor(v[0]):
+                            batch[k] = [x.to(rank) for x in v]
                         elif torch.is_tensor(v):
-                            batch[k]=v.to(rank)
+                            batch[k] = v.to(rank)
 
                     out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
 
-                    if rank==0 and phase=='train' and batch_idx%config.train.visualize_every==0:
+                    if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
                         wandb.log({'epoch':epoch,'batch_idx':batch_idx})
 
-                    if phase=='val':
+                    if phase == 'val':
                         all_out.append(out['valence_arousal_out'].detach().cpu().numpy())
                         all_gt.append( out['valence_arousal_gt'].detach().cpu().numpy())
                         all_vids.extend(batch['video_ID'])
 
-                    if rank==0 and phase=='train' and batch_idx%5==0:
+                    if rank==0 and phase == 'train' and batch_idx % 5 == 0:
                         print(out['valence_arousal_out'])
                         print(out['valence_arousal_gt'])
 
