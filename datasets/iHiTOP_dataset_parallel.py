@@ -20,6 +20,14 @@ from tqdm import tqdm
 from scipy.stats import skewnorm
 import sklearn
 
+import os
+import pickle
+import numpy as np
+from tqdm import tqdm
+from scipy.stats import skewnorm
+from multiprocessing import Pool, cpu_count
+from collections import defaultdict
+
 AROUSAL_AVG = 2.344899295396891
 AROUSAL_STD = 0.46212774076318297
 
@@ -555,7 +563,8 @@ def cull_indices(hdf5_file_paths, seg_indices, config,
     1) Build (and cache) one slice per HDF5 group in serial.
     2) Bin by length, fit skewnorm over bins.
     3) Draw multinomial(N, bin_probs) → counts per bin.
-    4) In parallel, for each bin, pop top‐count entries by overall variance.
+    4) In parallel, for each bin, pop top‐count entries by overall variance,
+       showing a tqdm bar over bins sampled.
     """
     # 1) group seg_indices by file_idx
     seg_by_file = {}
@@ -579,11 +588,14 @@ def cull_indices(hdf5_file_paths, seg_indices, config,
             with h5py.File(path, "r") as h5:
                 for gidx in seg_by_file.get(file_idx, []):
                     g = h5.get(str(gidx))
-                    if g is None: continue
+                    if g is None: 
+                        continue
                     # require keys + length bounds + removed-frame threshold
                     if ("img" not in g or "landmarks_mp" not in g
-                            or "valence_arousal" not in g): continue
-                    if len(g["valence_arousal"]) != 2: continue
+                            or "valence_arousal" not in g):
+                        continue
+                    if len(g["valence_arousal"]) != 2:
+                        continue
                     img = g["img"].shape[0]
                     rem = g["removed_frames"].shape[0]
                     if img+rem>0 and (rem/(img+rem))>=config.dataset.iHiTOP.removed_frames_threshold:
@@ -612,8 +624,8 @@ def cull_indices(hdf5_file_paths, seg_indices, config,
     # 3) flatten into a single numpy array
     rows = []
     for fidx, entries in slice_props.items():
-        for length, overall, mouth, gidx, s, e in entries:
-            rows.append((length, overall, mouth, fidx, gidx, s, e))
+        for length, overall, mouth, f, g, s, e in entries:
+            rows.append((length, overall, mouth, f, g, s, e))
     if not rows:
         return np.zeros((0,4), dtype=np.int32)
 
@@ -630,16 +642,14 @@ def cull_indices(hdf5_file_paths, seg_indices, config,
     alpha  = getattr(config.dataset.iHiTOP, "skew_alpha", 0.7)
     scale  = getattr(config.dataset.iHiTOP, "skew_scale", 25)
     dist   = skewnorm(alpha, loc=mean, scale=scale)
-    centers= (bin_edges[:-1]+bin_edges[1:]) / 2
+    centers= (bin_edges[:-1] + bin_edges[1:]) / 2
 
     # 6) build bin→list(row_idx) mapping, sorted by overall-var DESC
-    from collections import defaultdict
     bin_map = defaultdict(list)
     for ridx, b in enumerate(bins):
         if 1 <= b < len(centers)+1:
             bin_map[b].append(ridx)
     valid_bins = sorted(bin_map.keys())
-
     for b in valid_bins:
         bin_map[b].sort(key=lambda i: arr[i,1], reverse=True)
 
@@ -653,17 +663,23 @@ def cull_indices(hdf5_file_paths, seg_indices, config,
 
     # 8) prepare parallel pick args
     pick_args = [(bin_map[b], counts[b]) for b in valid_bins if counts[b]>0]
-    workers = 24
+    workers = min(cpu_count(), len(pick_args)) if pick_args else 1
 
-    with Pool(workers) as p:
-        picks = p.map(_pick_top_variance, pick_args)
+    # 9) parallel pick with progress bar
+    picks = []
+    if pick_args:
+        with Pool(workers) as p:
+            for picked in tqdm(p.imap(_pick_top_variance, pick_args),
+                               total=len(pick_args),
+                               desc="Sampling bins"):
+                picks.append(picked)
 
-    # 9) flatten into final (fidx, gidx, s, e)
+    # 10) flatten picks into final (fidx, gidx, s, e)
     chosen = []
     for sub in picks:
         for ridx in sub:
-            f,g,s,e = map(int, arr[ridx,3:7])
-            chosen.append((f,g,s,e))
+            f, g, s, e = map(int, arr[ridx, 3:7])
+            chosen.append((f, g, s, e))
 
     return np.array(chosen, dtype=np.int32)
 
