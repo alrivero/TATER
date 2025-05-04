@@ -548,7 +548,7 @@ def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
 
     return slices
 
-def cull_indices(slice_properties_path="sp.pkl"):
+def cull_indices(hdf5_file_paths, seg_indices, config, slice_properties_path="slice_properties.pkl"):
     # Load your precomputed slice list
     with open(slice_properties_path, "rb") as f:
         slice_properties = pickle.load(f)
