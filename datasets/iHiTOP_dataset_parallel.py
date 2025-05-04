@@ -548,158 +548,117 @@ def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
 
     return slices
 
-from multiprocessing import Pool, cpu_count
-from collections import defaultdict
-from tqdm import tqdm
-import numpy as np
 import os
 import pickle
 import h5py
+import numpy as np
+from tqdm import tqdm
 from scipy.stats import skewnorm
 
-def _pick_top_variance(args):
-    """
-    Worker for parallel sampling:
-      args = (row_indices, count)
-    returns the first `count` indices from row_indices
-    """
-    row_indices, count = args
-    return row_indices[:count]
-
-def cull_indices(hdf5_file_paths, seg_indices, config,
+def cull_indices(hdf5_file_paths,
+                 seg_indices,
+                 config,
                  slice_properties_path="slice_properties.pkl"):
     """
-    1) Build (and cache) one slice per HDF5 group.
-    2) Bin by length, fit skewnorm over bins.
-    3) Draw multinomial(N, bin_probs) → counts per bin.
-    4) In parallel, for each bin, take top‐count entries by overall variance.
-    5) Pad with global top‐variance segments if we drew fewer than N.
+    Filters and generates valid indices for data slices from HDF5 files with a maximum cap,
+    using a skew-normal sampling strategy on slice length to favor longer segments (but not exclusively).
     """
-    N = config.dataset.iHiTOP.max_data_idxs
 
-    # 1) group seg_indices by file
-    seg_by_file = defaultdict(list)
-    for fidx, gidx in seg_indices:
-        seg_by_file[int(fidx)].append(int(gidx))
+    max_cap = config.dataset.iHiTOP.max_data_idxs
+    # Landmark indices for mouth variance calculation (unused here)
+    mp_upper_inner_lip_idxs = [66, 73, 74, 75, 76, 86, 91, 92, 93, 94, 104]
+    mp_lower_inner_lip_idxs = [67, 78, 79, 81, 83, 96, 97, 99, 101]
 
-    # 2) load or build slice_properties
+    # 1) Group segment indices by file
+    seg_indices_by_file = {}
+    for file_idx, group_idx in seg_indices:
+        seg_indices_by_file.setdefault(int(file_idx), []).append(int(group_idx))
+
+    # 2) Load or compute slice_properties per file
     if os.path.exists(slice_properties_path):
         with open(slice_properties_path, "rb") as f:
-            slice_props = pickle.load(f)
-        print(f"Loaded slice cache from {slice_properties_path}")
+            slice_properties = pickle.load(f)
+        print(f"Loaded precomputed slice properties from {slice_properties_path}")
     else:
-        slice_props = {}
-        mp_upper = [66,73,74,75,76,86,91,92,93,94,104]
-        mp_lower = [67,78,79,81,83,96,97,99,101]
+        slice_properties = {}
+        for file_idx, file_path in tqdm(enumerate(hdf5_file_paths),
+                                        desc="Processing HDF5 Files",
+                                        total=len(hdf5_file_paths)):
+            info = []
+            try:
+                with h5py.File(file_path, "r") as h5:
+                    for group_idx in seg_indices_by_file.get(file_idx, []):
+                        g = h5.get(str(group_idx), None)
+                        if g is None:
+                            continue
 
-        for file_idx, path in tqdm(enumerate(hdf5_file_paths),
-                                   total=len(hdf5_file_paths),
-                                   desc="Building slice cache"):
-            entries = []
-            with h5py.File(path, "r") as h5:
-                for gidx in seg_by_file[file_idx]:
-                    g = h5.get(str(gidx))
-                    if g is None: continue
-                    # require keys + length bounds + removed-frame threshold
-                    if ("img" not in g or "landmarks_mp" not in g
-                            or "valence_arousal" not in g):
-                        continue
-                    if len(g["valence_arousal"]) != 2:
-                        continue
-                    img = g["img"].shape[0]
-                    rem = g["removed_frames"].shape[0]
-                    if img+rem>0 and (rem/(img+rem)) >= config.dataset.iHiTOP.removed_frames_threshold:
-                        continue
-                    if img < config.dataset.iHiTOP.min_seg_len or img > config.dataset.iHiTOP.max_seg_len:
-                        continue
+                        # thresholds on removed_frames
+                        rem = g["removed_frames"].shape[0]
+                        img_len = g["img"].shape[0]
+                        total = img_len + rem
+                        if total > 0 and (rem / total) >= config.dataset.iHiTOP.removed_frames_threshold:
+                            continue
 
-                    lm = g["landmarks_mp"][()]  # (T,N,3)
-                    overall = np.var(lm[:,:,:2], axis=(0,1)).sum()
-                    lip = np.concatenate([
-                        lm[:,mp_upper,:2],
-                        lm[:,mp_lower,:2]
-                    ], axis=1)
-                    mouth = np.var(lip, axis=(0,1)).sum()
+                        # length filters
+                        if img_len < config.dataset.iHiTOP.min_seg_len or img_len > config.dataset.iHiTOP.max_seg_len:
+                            continue
 
-                    # single slice: 0→img
-                    entries.append((img, overall, mouth,
-                                    file_idx, gidx, 0, img))
-            slice_props[file_idx] = entries
+                        # compute overall variance only
+                        lm = g["landmarks_mp"][()]        # (T, N, 3)
+                        overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
 
+                        # record one slice: 0 → img_len
+                        info.append((
+                            img_len,          # slice_length
+                            overall_var,
+                            file_idx,
+                            group_idx,
+                            0,                # start frame
+                            img_len           # end frame
+                        ))
+            except Exception:
+                pass
+
+            slice_properties[file_idx] = info
+
+        # cache for next time
         with open(slice_properties_path, "wb") as f:
-            pickle.dump(slice_props, f)
-        print(f"Saved slice cache to {slice_properties_path}")
+            pickle.dump(slice_properties, f)
+        print(f"Saved slice properties to {slice_properties_path}")
 
-    # 3) flatten into one big array
-    rows = []
-    for fidx, entries in slice_props.items():
-        for length, overall, mouth, f, g, s, e in entries:
-            rows.append((length, overall, mouth, f, g, s, e))
-    if not rows:
-        return np.zeros((0,4), dtype=np.int32)
+    # 3) Flatten all slices into one big array
+    all_slices = []
+    for props in slice_properties.values():
+        all_slices.extend(props)
+    all_slices = np.array(all_slices)  # shape (M, 6)
 
-    arr = np.array(rows, dtype=np.float64)
-    lengths = arr[:,0].astype(int)
+    if all_slices.shape[0] == 0:
+        return np.zeros((0, 4), dtype=int)
 
-    # 4) bin by length [1..max_length]
-    max_length = lengths.max()
-    bin_edges = np.arange(1, max_length+2)
-    bins = np.digitize(lengths, bin_edges)
+    lengths     = all_slices[:, 0]
+    overall_var = all_slices[:, 1]
 
-    # 5) fit skew‐normal over bin centers
-    mean   = getattr(config.dataset.iHiTOP, "skew_mean", 40)
-    alpha  = getattr(config.dataset.iHiTOP, "skew_alpha", 0.7)
-    scale  = getattr(config.dataset.iHiTOP, "skew_scale", 25)
-    dist   = skewnorm(alpha, loc=mean, scale=scale)
-    centers= (bin_edges[:-1] + bin_edges[1:]) / 2
+    # 4) Build skew-normal distribution over lengths
+    desired_mean = config.dataset.iHiTOP.skew_mean   if hasattr(config.dataset.iHiTOP, 'skew_mean')   else 40
+    skewness     = config.dataset.iHiTOP.skewness    if hasattr(config.dataset.iHiTOP, 'skewness')     else 0.7
+    scale        = config.dataset.iHiTOP.skew_scale  if hasattr(config.dataset.iHiTOP, 'skew_scale')   else 25
 
-    # 6) build bin→list(row_idx) mapping, sorted by overall-var DESC
-    bin_map = defaultdict(list)
-    for ridx, b in enumerate(bins):
-        if 1 <= b < len(centers)+1:
-            bin_map[b].append(ridx)
-    valid_bins = sorted(bin_map.keys())
-    for b in valid_bins:
-        bin_map[b].sort(key=lambda i: arr[i,1], reverse=True)
+    skew_dist = skewnorm(skewness, loc=desired_mean, scale=scale)
+    weights = skew_dist.pdf(lengths)
+    weights /= weights.sum()
 
-    # 7) draw a multinomial over the bins (uncapped counts)
-    probs = dist.pdf(centers[np.array(valid_bins)-1])
-    probs /= probs.sum()
-    raw_counts = np.random.multinomial(N, probs)
-    counts = {b: raw_counts[i] for i,b in enumerate(valid_bins)}
+    # 5) Sample up to max_cap without replacement
+    n_sample = min(max_cap, len(weights))
+    chosen_idxs = np.random.choice(len(weights),
+                                   size=n_sample,
+                                   replace=False,
+                                   p=weights)
 
-    # 8) prepare parallel pick args
-    pick_args = [(bin_map[b], counts[b]) for b in valid_bins if counts[b]>0]
-    workers = min(cpu_count(), len(pick_args)) if pick_args else 1
+    sampled = all_slices[chosen_idxs]  # shape (n_sample, 6)
 
-    # 9) parallel pick with progress bar
-    picked_ridxs = []
-    if pick_args:
-        with Pool(workers) as pool:
-            for sub in tqdm(pool.imap(_pick_top_variance, pick_args),
-                            total=len(pick_args),
-                            desc="Sampling bins"):
-                picked_ridxs.extend(sub)
-
-    # 10) flatten and record used
-    chosen = []
-    used = set()
-    for ridx in picked_ridxs:
-        used.add(ridx)
-        f, g, s, e = map(int, arr[ridx,3:7])
-        chosen.append((f,g,s,e))
-
-    # 11) pad if we’ve drawn fewer than N
-    if len(chosen) < N:
-        all_idxs = set(range(len(arr)))
-        leftover = sorted(all_idxs - used,
-                          key=lambda i: arr[i,1],  # overall variance
-                          reverse=True)
-        for ridx in leftover[: N - len(chosen)]:
-            f, g, s, e = map(int, arr[ridx,3:7])
-            chosen.append((f,g,s,e))
-
-    return np.array(chosen, dtype=np.int32)
+    # 6) Extract final indices [file_idx, group_idx, start, end]
+    data_idxs = sampled[:, [2, 3, 4, 5]].astype(int)
+    return data_idxs
 
 # def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/12, 6/12), length_bias=1.0, variance_bias=10.0, slice_properties_path="slice_properties.pkl"):
 #     """
