@@ -100,8 +100,8 @@ def train(rank, world_size, config):
 
     # 7) load your two quantile‐to‐normal transformers (only rank 0 needs them for metrics)
     if rank == 0:
-        with open(config.dataset.valence_transform,  'rb') as f: val_tf = pickle.load(f)
-        with open(config.dataset.arousal_transform, 'rb') as f: aro_tf = pickle.load(f)
+        with open(config.dataset.iHiTOP.valence_transform,  'rb') as f: val_tf = pickle.load(f)
+        with open(config.dataset.iHiTOP.arousal_transform, 'rb') as f: aro_tf = pickle.load(f)
     else:
         val_tf = aro_tf = None
 
