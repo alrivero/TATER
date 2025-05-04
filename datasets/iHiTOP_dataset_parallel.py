@@ -540,311 +540,438 @@ def slice_with_overlap(img_tensor, max_batch_len, overlap=3):
 
     return slices
 
-def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/12, 6/12), length_bias=1.0, variance_bias=10.0, slice_properties_path="slice_properties.pkl"):
+def _pick_top_variance(args):
     """
-    Filters and generates valid indices for data slices from HDF5 files with a maximum cap,
-    using a 2D Gaussian sampling strategy to favor long slices with high variance.
-
-    Args:
-        hdf5_file_paths (list): List of paths to HDF5 files.
-        seg_indices (numpy.ndarray): Array of (file_idx, group_idx) pairs to be processed.
-        config: Configuration object with dataset thresholds and max cap.
-        heuristic_probs (tuple): Probabilities for the three heuristics (random, mouth variance, overall variance).
-        bias_factor (float): Factor to scale the covariance matrix bias, favoring long slices with high variance.
-        slice_properties_path (str): Path to save/load precomputed slice properties.
-
-    Returns:
-        numpy.ndarray: Array of valid indices [file_idx, group_idx, start_idx, end_idx].
+    Worker for parallel sampling:
+    args = (row_indices, count)
+    returns the first `count` indices from row_indices
     """
-    data_idxs = []
-    max_cap = config.dataset.iHiTOP.max_data_idxs
-    seg_indices_by_file = {}
+    row_indices, count = args
+    return row_indices[:count]
 
-    # Landmark indices for mouth variance calculation
-    mp_upper_inner_lip_idxs = [66, 73, 74, 75, 76, 86, 91, 92, 93, 94, 104]
-    mp_lower_inner_lip_idxs = [67, 78, 79, 81, 83, 96, 97, 99, 101]
+def cull_indices(hdf5_file_paths, seg_indices, config,
+                 slice_properties_path="slice_properties.pkl"):
+    """
+    1) Build (and cache) one slice per HDF5 group in serial.
+    2) Bin by length, fit skewnorm over bins.
+    3) Draw multinomial(N, bin_probs) → counts per bin.
+    4) In parallel, for each bin, pop top‐count entries by overall variance.
+    """
+    # 1) group seg_indices by file_idx
+    seg_by_file = {}
+    for fidx, gidx in seg_indices:
+        seg_by_file.setdefault(int(fidx), []).append(int(gidx))
 
-    sampled_randomly = []
-    sampled_segments = []
-    fallback_count = 0
-
-    # Group segment indices by file
-    for file_idx, group_idx in seg_indices:
-        if file_idx not in seg_indices_by_file:
-            seg_indices_by_file[file_idx] = []
-        seg_indices_by_file[file_idx].append(int(group_idx))
-
-        max_img_length = 0
+    # 2) load or build slice_properties
     if os.path.exists(slice_properties_path):
         with open(slice_properties_path, "rb") as f:
-            slice_properties = pickle.load(f)
-        with open("max_seg_len.pkl", "rb") as f:
-            max_img_length = pickle.load(f)
-        print(f"Loaded precomputed slice properties from {slice_properties_path}")
+            slice_props = pickle.load(f)
+        print(f"Loaded slice cache from {slice_properties_path}")
     else:
-        # Compute one “slice” per group (no overlapping sub-slices)
-        slice_properties = {}
-        for file_idx, file_path in tqdm(enumerate(hdf5_file_paths),
-                                        desc="Processing HDF5 Files"):
-            hdf5_file = h5py.File(file_path, "r")
-            slices_info = []
+        slice_props = {}
+        mp_upper = [66,73,74,75,76,86,91,92,93,94,104]
+        mp_lower = [67,78,79,81,83,96,97,99,101]
 
-            for group_idx in seg_indices_by_file.get(file_idx, []):
-                try:
-                    g = hdf5_file[str(group_idx)]
-                    # require these keys
-                    required = ["img", "landmarks_mp", "valence_arousal"]
-                    if not all(k in g.keys() for k in required):
-                        continue
-                    if len(g["valence_arousal"]) != 2:
-                        continue
-
-                    # removed-frames threshold
-                    rem = g["removed_frames"].shape[0]
+        for file_idx, path in tqdm(enumerate(hdf5_file_paths),
+                                   total=len(hdf5_file_paths),
+                                   desc="Building slice cache"):
+            entries = []
+            with h5py.File(path, "r") as h5:
+                for gidx in seg_by_file.get(file_idx, []):
+                    g = h5.get(str(gidx))
+                    if g is None: continue
+                    # require keys + length bounds + removed-frame threshold
+                    if ("img" not in g or "landmarks_mp" not in g
+                            or "valence_arousal" not in g): continue
+                    if len(g["valence_arousal"]) != 2: continue
                     img = g["img"].shape[0]
-                    total = img + rem
-                    if total > 0 and (rem / total) >= config.dataset.iHiTOP.removed_frames_threshold:
+                    rem = g["removed_frames"].shape[0]
+                    if img+rem>0 and (rem/(img+rem))>=config.dataset.iHiTOP.removed_frames_threshold:
+                        continue
+                    if img < config.dataset.iHiTOP.min_seg_len \
+                       or img > config.dataset.iHiTOP.max_seg_len:
                         continue
 
-                    # length filters
-                    if img < config.dataset.iHiTOP.min_seg_len or img > config.dataset.iHiTOP.max_seg_len:
-                        continue
-
-                    # now compute variances on the **entire** segment
-                    lm = g["landmarks_mp"][()]        # shape (T, N, 3)
-                    overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
+                    lm = g["landmarks_mp"][()]  # (T,N,3)
+                    overall = np.var(lm[:,:,:2], axis=(0,1)).sum()
                     lip = np.concatenate([
-                        lm[:, mp_upper_inner_lip_idxs, :2],
-                        lm[:, mp_lower_inner_lip_idxs, :2]
+                        lm[:,mp_upper,:2],
+                        lm[:,mp_lower,:2]
                     ], axis=1)
-                    mouth_var = np.var(lip, axis=(0, 1)).sum()
+                    mouth = np.var(lip, axis=(0,1)).sum()
 
-                    # record a single slice from 0 → img
-                    slices_info.append((
-                        img,               # slice_length
-                        overall_var,
-                        mouth_var,
-                        file_idx,
-                        group_idx,
-                        0,                # start frame
-                        img               # end frame
-                    ))
+                    # single slice: 0→img
+                    entries.append((img, overall, mouth,
+                                    file_idx, gidx, 0, img))
+            slice_props[file_idx] = entries
 
-                    max_img_length = max(max_img_length, img)
-
-                except Exception:
-                    continue
-
-            slice_properties[file_idx] = slices_info
-            hdf5_file.close()
-
-        # cache for next time
         with open(slice_properties_path, "wb") as f:
-            pickle.dump(slice_properties, f)
-        with open("max_seg_len.pkl", "wb") as f:
-            pickle.dump(np.array(max_img_length), f)
-        print(f"Saved slice properties to {slice_properties_path}")
+            pickle.dump(slice_props, f)
+        print(f"Saved slice cache to {slice_properties_path}")
 
-    # Sampling using heuristics
-    remaining_cap = max_cap
-    file_segment_counts = {}  # Track number of segments sampled per file
+    # 3) flatten into a single numpy array
+    rows = []
+    for fidx, entries in slice_props.items():
+        for length, overall, mouth, gidx, s, e in entries:
+            rows.append((length, overall, mouth, fidx, gidx, s, e))
+    if not rows:
+        return np.zeros((0,4), dtype=np.int32)
 
-    with tqdm(total=max_cap, desc="Sampling Segments") as pbar:
-        while remaining_cap > 0 and any(slice_properties.values()):
-            # Randomly shuffle files to sample from
-            file_indices = list(slice_properties.keys())
-            np.random.shuffle(file_indices)
+    arr = np.array(rows, dtype=np.float64)
+    lengths = arr[:,0].astype(int)
 
-            for file_idx in file_indices:
-                if not slice_properties[file_idx]:
-                    continue
+    # 4) bin by length [1..max_length]
+    max_length = lengths.max()
+    bin_edges = np.arange(1, max_length+2)
+    bins = np.digitize(lengths, bin_edges)
 
-                # Extract slice properties
-                slice_array = np.array([(length, overall_var, mouth_var, group_idx, s, e) for length, overall_var, mouth_var, _, group_idx, s, e in slice_properties[file_idx]])
-                slice_lengths, overall_variances, mouth_variances = slice_array[:, 0], slice_array[:, 1], slice_array[:, 2]
+    # 5) fit skew-normal over bin centers
+    mean   = getattr(config.dataset.iHiTOP, "skew_mean", 40)
+    alpha  = getattr(config.dataset.iHiTOP, "skew_alpha", 0.7)
+    scale  = getattr(config.dataset.iHiTOP, "skew_scale", 25)
+    dist   = skewnorm(alpha, loc=mean, scale=scale)
+    centers= (bin_edges[:-1]+bin_edges[1:]) / 2
 
-                # Define bins for segment lengths
-                bin_edges = np.arange(1, max_img_length + 2, 1)  # Bins from 1 to 60
-                bins = np.digitize(slice_lengths, bin_edges)
+    # 6) build bin→list(row_idx) mapping, sorted by overall-var DESC
+    from collections import defaultdict
+    bin_map = defaultdict(list)
+    for ridx, b in enumerate(bins):
+        if 1 <= b < len(centers)+1:
+            bin_map[b].append(ridx)
+    valid_bins = sorted(bin_map.keys())
 
-                # Group slices into bins without initial sorting
-                binned_slices = {i: [] for i in range(1, len(bin_edges))}
-                for idx, bin_idx in enumerate(bins):
-                    if 1 <= bin_idx < len(bin_edges):  # Ignore out-of-range bins
-                        binned_slices[bin_idx].append((slice_lengths[idx], overall_variances[idx], mouth_variances[idx], slice_array[idx, 3], slice_array[idx, 4], slice_array[idx, 5]))
+    for b in valid_bins:
+        bin_map[b].sort(key=lambda i: arr[i,1], reverse=True)
 
-                # Define a skewed normal distribution for bin sampling
-                desired_mean = 40
-                skewness = 0.7
-                scale = 25
-                skew_dist = skewnorm(skewness, loc=desired_mean, scale=scale)
+    # 7) draw a multinomial over the bins
+    probs = dist.pdf(centers[np.array(valid_bins)-1])
+    probs /= probs.sum()
+    N = config.dataset.iHiTOP.max_data_idxs
+    raw_counts = np.random.multinomial(N, probs)
+    counts = {b: min(c, len(bin_map[b]))
+              for b,c in zip(valid_bins, raw_counts)}
 
-                # Generate probabilities for bins based on bin centers
-                bin_centers = np.array([(bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(len(bin_edges) - 1)])
-                valid_bins = [i for i in binned_slices if binned_slices[i]]  # Only consider non-empty bins
+    # 8) prepare parallel pick args
+    pick_args = [(bin_map[b], counts[b]) for b in valid_bins if counts[b]>0]
+    workers = 24
 
-                if not valid_bins:  # Skip if no valid bins
-                    slice_properties.pop(file_idx)
-                    continue
+    with Pool(workers) as p:
+        picks = p.map(_pick_top_variance, pick_args)
 
-                valid_bin_centers = bin_centers[np.array(valid_bins) - 1]  # Adjust indices to align with `bin_centers`
+    # 9) flatten into final (fidx, gidx, s, e)
+    chosen = []
+    for sub in picks:
+        for ridx in sub:
+            f,g,s,e = map(int, arr[ridx,3:7])
+            chosen.append((f,g,s,e))
 
-                # Adjust the mean if longer bins are empty
-                adjusted_mean = min(desired_mean + 5, valid_bin_centers.max())  # Push toward max bin center
-                skew_dist = skewnorm(skewness, loc=adjusted_mean, scale=scale)
+    return np.array(chosen, dtype=np.int32)
 
-                bin_probs = skew_dist.pdf(valid_bin_centers)
-                bin_probs /= bin_probs.sum()  # Normalize to sum to 1
+# def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/12, 6/12), length_bias=1.0, variance_bias=10.0, slice_properties_path="slice_properties.pkl"):
+#     """
+#     Filters and generates valid indices for data slices from HDF5 files with a maximum cap,
+#     using a 2D Gaussian sampling strategy to favor long slices with high variance.
 
-                # Sample a single bin asymmetrically
-                sampled_bin = np.random.choice(valid_bins, p=bin_probs)
+#     Args:
+#         hdf5_file_paths (list): List of paths to HDF5 files.
+#         seg_indices (numpy.ndarray): Array of (file_idx, group_idx) pairs to be processed.
+#         config: Configuration object with dataset thresholds and max cap.
+#         heuristic_probs (tuple): Probabilities for the three heuristics (random, mouth variance, overall variance).
+#         bias_factor (float): Factor to scale the covariance matrix bias, favoring long slices with high variance.
+#         slice_properties_path (str): Path to save/load precomputed slice properties.
 
-                # Sample a slice from the selected bin
-                if binned_slices[sampled_bin]:
-                    heuristic = np.random.rand()
-                    if False:  # Random sampling
-                        slice_idx = np.random.randint(len(binned_slices[sampled_bin]))
-                    elif False:
-                        # Sort the bin by mouth variance before sampling
-                        binned_slices[sampled_bin].sort(key=lambda x: x[2], reverse=True)
-                        slice_idx = 0  # Select the highest mouth variance
-                    else:  # Overall variance heuristic
-                        # Sort the bin by overall variance before sampling
-                        binned_slices[sampled_bin].sort(key=lambda x: x[1], reverse=True)
-                        slice_idx = 0  # Select the highest overall variance
+#     Returns:
+#         numpy.ndarray: Array of valid indices [file_idx, group_idx, start_idx, end_idx].
+#     """
+#     data_idxs = []
+#     max_cap = config.dataset.iHiTOP.max_data_idxs
+#     seg_indices_by_file = {}
 
-                    sampled_slice = binned_slices[sampled_bin].pop(slice_idx)
-                    length, overall_var, mouth_var, group_idx, s, e = sampled_slice
+#     # Landmark indices for mouth variance calculation
+#     mp_upper_inner_lip_idxs = [66, 73, 74, 75, 76, 86, 91, 92, 93, 94, 104]
+#     mp_lower_inner_lip_idxs = [67, 78, 79, 81, 83, 96, 97, 99, 101]
 
-                    # Add to sampled results
-                    sampled_segments.append(sampled_slice)
-                    file_segment_counts[file_idx] = file_segment_counts.get(file_idx, 0) + 1
-                    data_idxs.append(np.array([file_idx, group_idx, s, e]))
-                    remaining_cap -= 1
-                    pbar.update(1)
+#     sampled_randomly = []
+#     sampled_segments = []
+#     fallback_count = 0
 
-                    # Stop if the max cap is reached
-                    if remaining_cap <= 0:
-                        break
+#     # Group segment indices by file
+#     for file_idx, group_idx in seg_indices:
+#         if file_idx not in seg_indices_by_file:
+#             seg_indices_by_file[file_idx] = []
+#         seg_indices_by_file[file_idx].append(int(group_idx))
 
-                # If bins are exhausted for this file, remove it from consideration
-                if all(not binned_slices[bin_idx] for bin_idx in binned_slices):
-                    slice_properties.pop(file_idx)
+#         max_img_length = 0
+#     if os.path.exists(slice_properties_path):
+#         with open(slice_properties_path, "rb") as f:
+#             slice_properties = pickle.load(f)
+#         with open("max_seg_len.pkl", "rb") as f:
+#             max_img_length = pickle.load(f)
+#         print(f"Loaded precomputed slice properties from {slice_properties_path}")
+#     else:
+#         # Compute one “slice” per group (no overlapping sub-slices)
+#         slice_properties = {}
+#         for file_idx, file_path in tqdm(enumerate(hdf5_file_paths),
+#                                         desc="Processing HDF5 Files"):
+#             hdf5_file = h5py.File(file_path, "r")
+#             slices_info = []
 
-    # Gather all slices and sampled slices
-    all_slices = []
-    for slices in slice_properties.values():
-        all_slices.extend([(s[0], s[1], s[2]) for s in slices])  # (length, overall_var, mouth_var)
-    all_slices = np.array(all_slices)
+#             for group_idx in seg_indices_by_file.get(file_idx, []):
+#                 try:
+#                     g = hdf5_file[str(group_idx)]
+#                     # require these keys
+#                     required = ["img", "landmarks_mp", "valence_arousal"]
+#                     if not all(k in g.keys() for k in required):
+#                         continue
+#                     if len(g["valence_arousal"]) != 2:
+#                         continue
 
-    sampled_slices = np.array([(s[0], s[1], s[2]) for s in sampled_segments])
+#                     # removed-frames threshold
+#                     rem = g["removed_frames"].shape[0]
+#                     img = g["img"].shape[0]
+#                     total = img + rem
+#                     if total > 0 and (rem / total) >= config.dataset.iHiTOP.removed_frames_threshold:
+#                         continue
 
-    # Initialize categories to avoid UnboundLocalError
-    not_sampled = []
-    sampled = []
+#                     # length filters
+#                     if img < config.dataset.iHiTOP.min_seg_len or img > config.dataset.iHiTOP.max_seg_len:
+#                         continue
 
-    # Categorize slices based on sampling status
-    for slice_data in all_slices:
-        if tuple(slice_data) in sampled_slices:
-            sampled.append(slice_data)
-        else:
-            not_sampled.append(slice_data)
+#                     # now compute variances on the **entire** segment
+#                     lm = g["landmarks_mp"][()]        # shape (T, N, 3)
+#                     overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
+#                     lip = np.concatenate([
+#                         lm[:, mp_upper_inner_lip_idxs, :2],
+#                         lm[:, mp_lower_inner_lip_idxs, :2]
+#                     ], axis=1)
+#                     mouth_var = np.var(lip, axis=(0, 1)).sum()
 
-    # Convert lists to numpy arrays for consistent processing
-    not_sampled = np.array(not_sampled)
-    sampled = np.array(sampled)
+#                     # record a single slice from 0 → img
+#                     slices_info.append((
+#                         img,               # slice_length
+#                         overall_var,
+#                         mouth_var,
+#                         file_idx,
+#                         group_idx,
+#                         0,                # start frame
+#                         img               # end frame
+#                     ))
 
-    # Ensure there are valid slices to visualize
-    if len(all_slices) == 0 or len(sampled_slices) == 0:
-        print("No slices or sampled slices to visualize.")
-    else:
-        total_points = 10000
-        total_available = len(not_sampled) + len(sampled)
+#                     max_img_length = max(max_img_length, img)
 
-        if total_available > total_points:
-            not_sampled_limit = int((len(not_sampled) / total_available) * total_points)
-            sampled_limit = total_points - not_sampled_limit
+#                 except Exception:
+#                     continue
 
-            # Downsample based on proportional limits
-            if len(not_sampled) > not_sampled_limit:
-                not_sampled = not_sampled[np.random.choice(len(not_sampled), not_sampled_limit, replace=False)]
-            if len(sampled) > sampled_limit:
-                sampled = sampled[np.random.choice(len(sampled), sampled_limit, replace=False)]
+#             slice_properties[file_idx] = slices_info
+#             hdf5_file.close()
 
-        # Scatter plot for overall variance
-        plt.figure(figsize=(10, 6))
+#         # cache for next time
+#         with open(slice_properties_path, "wb") as f:
+#             pickle.dump(slice_properties, f)
+#         with open("max_seg_len.pkl", "wb") as f:
+#             pickle.dump(np.array(max_img_length), f)
+#         print(f"Saved slice properties to {slice_properties_path}")
 
-        # Plot downsampled categories
-        if len(not_sampled) > 0:
-            plt.scatter(not_sampled[:, 0], not_sampled[:, 1], color='gray', label='Not Sampled', s=5)
-        if len(sampled) > 0:
-            plt.scatter(sampled[:, 0], sampled[:, 1], color='red', label='Sampled', s=10)
+#     # Sampling using heuristics
+#     remaining_cap = max_cap
+#     file_segment_counts = {}  # Track number of segments sampled per file
 
-        # Add labels, title, and legend
-        plt.title("Sampling Density: Slice Length vs. Overall Variance")
-        plt.xlabel("Slice Length")
-        plt.ylabel("Overall Variance")
-        plt.legend()
-        plt.savefig("scatter_sampling_density_overall_variance.png")
-        plt.close()
+#     with tqdm(total=max_cap, desc="Sampling Segments") as pbar:
+#         while remaining_cap > 0 and any(slice_properties.values()):
+#             # Randomly shuffle files to sample from
+#             file_indices = list(slice_properties.keys())
+#             np.random.shuffle(file_indices)
 
-        # Scatter plot for mouth variance
-        plt.figure(figsize=(10, 6))
+#             for file_idx in file_indices:
+#                 if not slice_properties[file_idx]:
+#                     continue
 
-        # Plot downsampled categories
-        if len(not_sampled) > 0:
-            plt.scatter(not_sampled[:, 0], not_sampled[:, 2], color='gray', label='Not Sampled', s=5)
-        if len(sampled) > 0:
-            plt.scatter(sampled[:, 0], sampled[:, 2], color='red', label='Sampled', s=10)
+#                 # Extract slice properties
+#                 slice_array = np.array([(length, overall_var, mouth_var, group_idx, s, e) for length, overall_var, mouth_var, _, group_idx, s, e in slice_properties[file_idx]])
+#                 slice_lengths, overall_variances, mouth_variances = slice_array[:, 0], slice_array[:, 1], slice_array[:, 2]
 
-        # Add labels, title, and legend
-        plt.title("Sampling Density: Slice Length vs. Mouth Variance")
-        plt.xlabel("Slice Length")
-        plt.ylabel("Mouth Variance")
-        plt.legend()
-        plt.savefig("scatter_sampling_density_mouth_variance.png")
-        plt.close()
+#                 # Define bins for segment lengths
+#                 bin_edges = np.arange(1, max_img_length + 2, 1)  # Bins from 1 to 60
+#                 bins = np.digitize(slice_lengths, bin_edges)
 
-        # Statistics
-        avg_all_length = np.mean(all_slices[:, 0])
-        avg_sampled_length = np.mean(sampled_slices[:, 0])
+#                 # Group slices into bins without initial sorting
+#                 binned_slices = {i: [] for i in range(1, len(bin_edges))}
+#                 for idx, bin_idx in enumerate(bins):
+#                     if 1 <= bin_idx < len(bin_edges):  # Ignore out-of-range bins
+#                         binned_slices[bin_idx].append((slice_lengths[idx], overall_variances[idx], mouth_variances[idx], slice_array[idx, 3], slice_array[idx, 4], slice_array[idx, 5]))
 
-        avg_all_overall_var = np.mean(all_slices[:, 1])
-        avg_sampled_overall_var = np.mean(sampled_slices[:, 1])
+#                 # Define a skewed normal distribution for bin sampling
+#                 desired_mean = 40
+#                 skewness = 0.7
+#                 scale = 25
+#                 skew_dist = skewnorm(skewness, loc=desired_mean, scale=scale)
 
-        avg_all_mouth_var = np.mean(all_slices[:, 2])
-        avg_sampled_mouth_var = np.mean(sampled_slices[:, 2])
+#                 # Generate probabilities for bins based on bin centers
+#                 bin_centers = np.array([(bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(len(bin_edges) - 1)])
+#                 valid_bins = [i for i in binned_slices if binned_slices[i]]  # Only consider non-empty bins
 
-        max_length_all = np.max(all_slices[:, 0])
-        max_length_sampled = np.max(sampled_slices[:, 0])
+#                 if not valid_bins:  # Skip if no valid bins
+#                     slice_properties.pop(file_idx)
+#                     continue
 
-        min_length_all = np.min(all_slices[:, 0])
-        min_length_sampled = np.min(sampled_slices[:, 0])
+#                 valid_bin_centers = bin_centers[np.array(valid_bins) - 1]  # Adjust indices to align with `bin_centers`
 
-        print("Statistics:")
-        print(f"  Average Length (All): {avg_all_length:.2f}")
-        print(f"  Average Length (Sampled): {avg_sampled_length:.2f}")
-        print(f"  Max Length (All): {max_length_all:.2f}")
-        print(f"  Max Length (Sampled): {max_length_sampled:.2f}")
-        print(f"  Min Length (All): {min_length_all:.2f}")
-        print(f"  Min Length (Sampled): {min_length_sampled:.2f}")
+#                 # Adjust the mean if longer bins are empty
+#                 adjusted_mean = min(desired_mean + 5, valid_bin_centers.max())  # Push toward max bin center
+#                 skew_dist = skewnorm(skewness, loc=adjusted_mean, scale=scale)
 
-        print(f"  Average Overall Variance (All): {avg_all_overall_var:.4f}")
-        print(f"  Average Overall Variance (Sampled): {avg_sampled_overall_var:.4f}")
-        print(f"  Average Mouth Variance (All): {avg_all_mouth_var:.4f}")
-        print(f"  Average Mouth Variance (Sampled): {avg_sampled_mouth_var:.4f}")
+#                 bin_probs = skew_dist.pdf(valid_bin_centers)
+#                 bin_probs /= bin_probs.sum()  # Normalize to sum to 1
 
-        print(f"  Fallbacks Due to SVD Failure: {fallback_count}")
-        print(f"  Unique Files Sampled: {len(file_segment_counts)}")
-        print(f"  Average Segments Per File: {np.mean(list(file_segment_counts.values())):.2f}")
-        print(f"  Max Segments From a File: {np.max(list(file_segment_counts.values()))}")
-        print(f"  Min Segments From a File: {np.min(list(file_segment_counts.values()))}")
+#                 # Sample a single bin asymmetrically
+#                 sampled_bin = np.random.choice(valid_bins, p=bin_probs)
 
-        print("Plots saved as:")
-        print("- scatter_sampling_density_overall_variance.png")
-        print("- scatter_sampling_density_mouth_variance.png")
+#                 # Sample a slice from the selected bin
+#                 if binned_slices[sampled_bin]:
+#                     heuristic = np.random.rand()
+#                     if False:  # Random sampling
+#                         slice_idx = np.random.randint(len(binned_slices[sampled_bin]))
+#                     elif False:
+#                         # Sort the bin by mouth variance before sampling
+#                         binned_slices[sampled_bin].sort(key=lambda x: x[2], reverse=True)
+#                         slice_idx = 0  # Select the highest mouth variance
+#                     else:  # Overall variance heuristic
+#                         # Sort the bin by overall variance before sampling
+#                         binned_slices[sampled_bin].sort(key=lambda x: x[1], reverse=True)
+#                         slice_idx = 0  # Select the highest overall variance
 
-    return np.array(data_idxs)
+#                     sampled_slice = binned_slices[sampled_bin].pop(slice_idx)
+#                     length, overall_var, mouth_var, group_idx, s, e = sampled_slice
+
+#                     # Add to sampled results
+#                     sampled_segments.append(sampled_slice)
+#                     file_segment_counts[file_idx] = file_segment_counts.get(file_idx, 0) + 1
+#                     data_idxs.append(np.array([file_idx, group_idx, s, e]))
+#                     remaining_cap -= 1
+#                     pbar.update(1)
+
+#                     # Stop if the max cap is reached
+#                     if remaining_cap <= 0:
+#                         break
+
+#                 # If bins are exhausted for this file, remove it from consideration
+#                 if all(not binned_slices[bin_idx] for bin_idx in binned_slices):
+#                     slice_properties.pop(file_idx)
+
+#     # Gather all slices and sampled slices
+#     all_slices = []
+#     for slices in slice_properties.values():
+#         all_slices.extend([(s[0], s[1], s[2]) for s in slices])  # (length, overall_var, mouth_var)
+#     all_slices = np.array(all_slices)
+
+#     sampled_slices = np.array([(s[0], s[1], s[2]) for s in sampled_segments])
+
+#     # Initialize categories to avoid UnboundLocalError
+#     not_sampled = []
+#     sampled = []
+
+#     # Categorize slices based on sampling status
+#     for slice_data in all_slices:
+#         if tuple(slice_data) in sampled_slices:
+#             sampled.append(slice_data)
+#         else:
+#             not_sampled.append(slice_data)
+
+#     # Convert lists to numpy arrays for consistent processing
+#     not_sampled = np.array(not_sampled)
+#     sampled = np.array(sampled)
+
+#     # Ensure there are valid slices to visualize
+#     if len(all_slices) == 0 or len(sampled_slices) == 0:
+#         print("No slices or sampled slices to visualize.")
+#     else:
+#         total_points = 10000
+#         total_available = len(not_sampled) + len(sampled)
+
+#         if total_available > total_points:
+#             not_sampled_limit = int((len(not_sampled) / total_available) * total_points)
+#             sampled_limit = total_points - not_sampled_limit
+
+#             # Downsample based on proportional limits
+#             if len(not_sampled) > not_sampled_limit:
+#                 not_sampled = not_sampled[np.random.choice(len(not_sampled), not_sampled_limit, replace=False)]
+#             if len(sampled) > sampled_limit:
+#                 sampled = sampled[np.random.choice(len(sampled), sampled_limit, replace=False)]
+
+#         # Scatter plot for overall variance
+#         plt.figure(figsize=(10, 6))
+
+#         # Plot downsampled categories
+#         if len(not_sampled) > 0:
+#             plt.scatter(not_sampled[:, 0], not_sampled[:, 1], color='gray', label='Not Sampled', s=5)
+#         if len(sampled) > 0:
+#             plt.scatter(sampled[:, 0], sampled[:, 1], color='red', label='Sampled', s=10)
+
+#         # Add labels, title, and legend
+#         plt.title("Sampling Density: Slice Length vs. Overall Variance")
+#         plt.xlabel("Slice Length")
+#         plt.ylabel("Overall Variance")
+#         plt.legend()
+#         plt.savefig("scatter_sampling_density_overall_variance.png")
+#         plt.close()
+
+#         # Scatter plot for mouth variance
+#         plt.figure(figsize=(10, 6))
+
+#         # Plot downsampled categories
+#         if len(not_sampled) > 0:
+#             plt.scatter(not_sampled[:, 0], not_sampled[:, 2], color='gray', label='Not Sampled', s=5)
+#         if len(sampled) > 0:
+#             plt.scatter(sampled[:, 0], sampled[:, 2], color='red', label='Sampled', s=10)
+
+#         # Add labels, title, and legend
+#         plt.title("Sampling Density: Slice Length vs. Mouth Variance")
+#         plt.xlabel("Slice Length")
+#         plt.ylabel("Mouth Variance")
+#         plt.legend()
+#         plt.savefig("scatter_sampling_density_mouth_variance.png")
+#         plt.close()
+
+#         # Statistics
+#         avg_all_length = np.mean(all_slices[:, 0])
+#         avg_sampled_length = np.mean(sampled_slices[:, 0])
+
+#         avg_all_overall_var = np.mean(all_slices[:, 1])
+#         avg_sampled_overall_var = np.mean(sampled_slices[:, 1])
+
+#         avg_all_mouth_var = np.mean(all_slices[:, 2])
+#         avg_sampled_mouth_var = np.mean(sampled_slices[:, 2])
+
+#         max_length_all = np.max(all_slices[:, 0])
+#         max_length_sampled = np.max(sampled_slices[:, 0])
+
+#         min_length_all = np.min(all_slices[:, 0])
+#         min_length_sampled = np.min(sampled_slices[:, 0])
+
+#         print("Statistics:")
+#         print(f"  Average Length (All): {avg_all_length:.2f}")
+#         print(f"  Average Length (Sampled): {avg_sampled_length:.2f}")
+#         print(f"  Max Length (All): {max_length_all:.2f}")
+#         print(f"  Max Length (Sampled): {max_length_sampled:.2f}")
+#         print(f"  Min Length (All): {min_length_all:.2f}")
+#         print(f"  Min Length (Sampled): {min_length_sampled:.2f}")
+
+#         print(f"  Average Overall Variance (All): {avg_all_overall_var:.4f}")
+#         print(f"  Average Overall Variance (Sampled): {avg_sampled_overall_var:.4f}")
+#         print(f"  Average Mouth Variance (All): {avg_all_mouth_var:.4f}")
+#         print(f"  Average Mouth Variance (Sampled): {avg_sampled_mouth_var:.4f}")
+
+#         print(f"  Fallbacks Due to SVD Failure: {fallback_count}")
+#         print(f"  Unique Files Sampled: {len(file_segment_counts)}")
+#         print(f"  Average Segments Per File: {np.mean(list(file_segment_counts.values())):.2f}")
+#         print(f"  Max Segments From a File: {np.max(list(file_segment_counts.values()))}")
+#         print(f"  Min Segments From a File: {np.min(list(file_segment_counts.values()))}")
+
+#         print("Plots saved as:")
+#         print("- scatter_sampling_density_overall_variance.png")
+#         print("- scatter_sampling_density_mouth_variance.png")
+
+#     return np.array(data_idxs)
 
 def cull_indices_old(hdf5_file_paths, seg_indices, config):
     data_idxs = []
