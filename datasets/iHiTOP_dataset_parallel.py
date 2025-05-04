@@ -704,7 +704,7 @@ def cull_indices(hdf5_file_paths, seg_indices, config, heuristic_probs=(0/12, 6/
                     heuristic = np.random.rand()
                     if False:  # Random sampling
                         slice_idx = np.random.randint(len(binned_slices[sampled_bin]))
-                    elif False
+                    elif False:
                         # Sort the bin by mouth variance before sampling
                         binned_slices[sampled_bin].sort(key=lambda x: x[2], reverse=True)
                         slice_idx = 0  # Select the highest mouth variance
