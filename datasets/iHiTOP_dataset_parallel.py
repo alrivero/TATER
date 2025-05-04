@@ -561,13 +561,10 @@ def cull_indices(hdf5_file_paths,
                  slice_properties_path="slice_properties.pkl"):
     """
     Filters and generates valid indices for data slices from HDF5 files with a maximum cap,
-    using a skew-normal sampling strategy on slice length to favor longer segments (but not exclusively).
+    using a skew-normal sampling strategy on slice length (and only overall variance for filtering).
     """
 
     max_cap = config.dataset.iHiTOP.max_data_idxs
-    # Landmark indices for mouth variance calculation (unused here)
-    mp_upper_inner_lip_idxs = [66, 73, 74, 75, 76, 86, 91, 92, 93, 94, 104]
-    mp_lower_inner_lip_idxs = [67, 78, 79, 81, 83, 96, 97, 99, 101]
 
     # 1) Group segment indices by file
     seg_indices_by_file = {}
@@ -592,7 +589,7 @@ def cull_indices(hdf5_file_paths,
                         if g is None:
                             continue
 
-                        # thresholds on removed_frames
+                        # removed-frames threshold
                         rem = g["removed_frames"].shape[0]
                         img_len = g["img"].shape[0]
                         total = img_len + rem
@@ -607,7 +604,7 @@ def cull_indices(hdf5_file_paths,
                         lm = g["landmarks_mp"][()]        # (T, N, 3)
                         overall_var = np.var(lm[:, :, :2], axis=(0, 1)).sum()
 
-                        # record one slice: 0 → img_len
+                        # record one slice: start=0, end=img_len
                         info.append((
                             img_len,          # slice_length
                             overall_var,
@@ -631,7 +628,6 @@ def cull_indices(hdf5_file_paths,
     for props in slice_properties.values():
         all_slices.extend(props)
     all_slices = np.array(all_slices)  # shape (M, 6)
-
     if all_slices.shape[0] == 0:
         return np.zeros((0, 4), dtype=int)
 
@@ -639,24 +635,39 @@ def cull_indices(hdf5_file_paths,
     overall_var = all_slices[:, 1]
 
     # 4) Build skew-normal distribution over lengths
-    desired_mean = config.dataset.iHiTOP.skew_mean   if hasattr(config.dataset.iHiTOP, 'skew_mean')   else 40
-    skewness     = config.dataset.iHiTOP.skewness    if hasattr(config.dataset.iHiTOP, 'skewness')     else 0.7
-    scale        = config.dataset.iHiTOP.skew_scale  if hasattr(config.dataset.iHiTOP, 'skew_scale')   else 25
-
+    desired_mean = getattr(config.dataset.iHiTOP, "skew_mean", 40)
+    skewness     = getattr(config.dataset.iHiTOP, "skewness", 0.7)
+    scale        = getattr(config.dataset.iHiTOP, "skew_scale", 25)
     skew_dist = skewnorm(skewness, loc=desired_mean, scale=scale)
-    weights = skew_dist.pdf(lengths)
+    p_len = skew_dist.pdf(lengths)
+
+    # 5) Combine with variance if you like, or just use p_len alone
+    # Here we stick to length-only sampling as discussed:
+    weights = p_len
+
+    # Guard against all-zero weights
+    if weights.sum() == 0:
+        # fallback to uniform
+        weights = np.ones_like(weights)
     weights /= weights.sum()
 
-    # 5) Sample up to max_cap without replacement
-    n_sample = min(max_cap, len(weights))
-    chosen_idxs = np.random.choice(len(weights),
-                                   size=n_sample,
-                                   replace=False,
-                                   p=weights)
+    # 6) Ensure we don't request more samples than positive-weight entries
+    positive_count = np.count_nonzero(weights)
+    n_sample = min(max_cap, positive_count)
+
+    if n_sample == 0:
+        return np.zeros((0, 4), dtype=int)
+
+    chosen_idxs = np.random.choice(
+        len(weights),
+        size=n_sample,
+        replace=False,
+        p=weights
+    )
 
     sampled = all_slices[chosen_idxs]  # shape (n_sample, 6)
 
-    # 6) Extract final indices [file_idx, group_idx, start, end]
+    # 7) Extract [file_idx, group_idx, start, end]
     data_idxs = sampled[:, [2, 3, 4, 5]].astype(int)
     return data_idxs
 
