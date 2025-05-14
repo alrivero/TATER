@@ -377,7 +377,7 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         v = int(v)
         s = int(s)
         start = int(start)
-        end = int(end)
+        end = int(start) + 1
 
         video_group = self._get_hdf5_file(int(v))[str(s)]
         video_dict = {}

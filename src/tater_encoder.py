@@ -450,23 +450,23 @@ class TATEREncoder(SmirkEncoder):
                     sample_rate=self.downsample_rate
                 )
 
-                seq, tok, res_seq, res_tok, attn_records = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
+                # seq, tok, res_seq, res_tok, attn_records = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask, return_attn=True)
 
-                # visualise first item in batch
-                # see / save the first few heat-maps
-                paths = save_attention_maps(
-                    attn_data=attn_records,
-                    save_dir="all_attention_maps",
-                    batch_idx=0,
-                    vmax=None,
-                    cmap="viridis",
-                    dpi=150,
-                    show_progress=True
-                )
-                print("Done!  Images are in ./my_maps/")
+                # # visualise first item in batch
+                # # see / save the first few heat-maps
+                # paths = save_attention_maps(
+                #     attn_data=attn_records,
+                #     save_dir="all_attention_maps",
+                #     batch_idx=0,
+                #     vmax=None,
+                #     cmap="viridis",
+                #     dpi=150,
+                #     show_progress=True
+                # )
+                # print("Done!  Images are in ./my_maps/")
 
-                print(kill_me_lol)
-                # exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+                # print(kill_me_lol)
+                exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
             else:
                 exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
 
@@ -480,12 +480,14 @@ class TATEREncoder(SmirkEncoder):
             # if self.exp_use_audio:
             #     exp_residual_down += self.residual_linear(exp_video_residual)
 
-            updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
-                base_encoding,
-                exp_residual_down,
-                series_len,
-                og_series_len
-            )
+            # updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
+            #     base_encoding,
+            #     exp_residual_down,
+            #     series_len,
+            #     og_series_len
+            # )
+            updated_exp_encodings_all = exp_residual_down
+            exp_residuals_final = None
 
             if self.apply_linear_after_res and self.use_exp_linear:
                 exp_parameters = self.exp_layer(updated_exp_encodings_all)
