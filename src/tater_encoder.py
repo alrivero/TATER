@@ -414,6 +414,8 @@ class TATEREncoder(SmirkEncoder):
             
             if self.use_exp_linear_downsample:
                 exp_encodings_all = self.exp_layer_down(exp_encodings_all_test)
+            else:
+                exp_encodings_all = exp_encodings_all_test
 
             if video_mask is not None:
                 series_start = 0
@@ -494,7 +496,7 @@ class TATEREncoder(SmirkEncoder):
                 exp_parameters = self.exp_layer(updated_exp_encodings_all)
             else:
                 exp_parameters = updated_exp_encodings_all
-                
+
             exp_parameters = exp_parameters.reshape(exp_parameters.size(0), -1)
             exp_parameters = self.expression_encoder.expression_layers(exp_parameters)
 
