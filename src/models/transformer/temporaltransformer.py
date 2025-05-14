@@ -28,7 +28,7 @@ class TemporalTransformer(nn.Module):
                 d_model          = conf.attention.hidden_size,
                 dim_feedforward  = conf.attention.hidden_size_2,
                 nhead            = conf.attention.num_attention_heads,
-                dropout          = conf.attention.attention_probs_dropout_prob,
+                dropout          = 0.0,
                 layer_norm_eps   = conf.attention.layer_norm_eps,
                 batch_first      = True,
                 activation       = nn.LeakyReLU(0.01, inplace=False),
@@ -75,6 +75,10 @@ class TemporalTransformer(nn.Module):
             blk.norm2.weight.data.fill_(1.0)
             blk.norm2.bias.data.zero_()
 
+            # replace LayerNorms with Identity → no mean/var shift
+            blk.norm1 = nn.Identity()
+            blk.norm2 = nn.Identity()
+
     # ------------------------------------------------------------------
     def forward(self,
                 x: torch.Tensor,              # (B, S, D)
@@ -97,10 +101,10 @@ class TemporalTransformer(nn.Module):
         if token_mask is not None:
             x[token_mask] = self.mask_token
 
-        # — prepend <START> and append <STOP> —
-        start_tok = self.start_token.expand(B, 1, -1)
-        stop_tok  = self.stop_token .expand(B, 1, -1)
-        x = torch.cat((start_tok, x, stop_tok), dim=-2)  # (B, S+2, D)
+        # # — prepend <START> and append <STOP> —
+        # start_tok = self.start_token.expand(B, 1, -1)
+        # stop_tok  = self.stop_token .expand(B, 1, -1)
+        # x = torch.cat((start_tok, x, stop_tok), dim=-2)  # (B, S+2, D)
 
         # pad attention mask for the two new tokens
         attention_mask = pad(attention_mask, (1, 1), value=False)
@@ -114,5 +118,5 @@ class TemporalTransformer(nn.Module):
         #     x[:, 1:S+1, :] = self.final_dropout(x[:, 1:S+1, :])
 
         # remove special tokens from output
-        seq_out = x[:, 1:S+1, :]  # drop <START> and <STOP>
+        seq_out = x # [:, 1:S+1, :]  # drop <START> and <STOP>
         return seq_out, None
