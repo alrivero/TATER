@@ -397,8 +397,8 @@ class TATEREncoder(SmirkEncoder):
         else:
 
             if self.use_latent_exp:
-                exp_encodings_all = self.expression_encoder.encoder(img_cat)
-                exp_encodings_all = F.adaptive_avg_pool2d(exp_encodings_all[-1], (1, 1)).squeeze(-1).squeeze(-1)
+                exp_encodings_all_test_0 = self.expression_encoder.encoder(img_cat)
+                exp_encodings_all_test = F.adaptive_avg_pool2d(exp_encodings_all_test_0[-1], (1, 1)).squeeze(-1).squeeze(-1)
             else:
                 exp_encodings_all = self.expression_encoder(img_cat)
                 exp_encodings_all = torch.cat(list(exp_encodings_all.values()), dim=-1)
@@ -407,12 +407,13 @@ class TATEREncoder(SmirkEncoder):
             if self.add_to_flame_exp:
                 base_encoding = self.expression_encoder(img_cat)
                 base_encoding = torch.cat(list(base_encoding.values()), dim=-1)
+                base_encoding_test = self.expression_encoder.encoder(img_cat)
             else:
                 base_encoding = self.expression_encoder.encoder(img_cat)
                 base_encoding = F.adaptive_avg_pool2d(base_encoding[-1], (1, 1)).squeeze(-1).squeeze(-1)
             
             if self.use_exp_linear_downsample:
-                exp_encodings_all = self.exp_layer_down(exp_encodings_all)
+                exp_encodings_all = self.exp_layer_down(exp_encodings_all_test)
 
             if video_mask is not None:
                 series_start = 0
