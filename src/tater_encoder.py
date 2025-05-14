@@ -244,7 +244,7 @@ class TATEREncoder(SmirkEncoder):
         
         # Create an empty tensor to hold the interpolated values
         interpolated = torch.zeros(target_length, feature_size, device=downsampled_tensor.device)
-        
+         
         # Indices in the target tensor where the downsampled tensor was sampled
         sample_indices = torch.arange(0, num_samples * sample_rate, sample_rate, device=downsampled_tensor.device)
         
@@ -473,10 +473,10 @@ class TATEREncoder(SmirkEncoder):
 
             outputs['expression_residuals_down'] = exp_residual_out
 
-            if self.apply_linear_before_res and self.use_exp_linear:
+            if False: # self.apply_linear_before_res and self.use_exp_linear:
                 exp_residual_down = self.exp_layer(exp_residual_out)
             else:
-                exp_encodings_down = exp_residual_out
+                exp_residual_down = exp_residual_out
 
             # if self.exp_use_audio:
             #     exp_residual_down += self.residual_linear(exp_video_residual)
@@ -490,11 +490,13 @@ class TATEREncoder(SmirkEncoder):
             updated_exp_encodings_all = exp_residual_down
             exp_residuals_final = None
 
-            if self.apply_linear_after_res and self.use_exp_linear:
+            if False: # self.apply_linear_after_res and self.use_exp_linear:
                 exp_parameters = self.exp_layer(updated_exp_encodings_all)
             else:
                 exp_parameters = updated_exp_encodings_all
+                
             exp_parameters = exp_parameters.reshape(exp_parameters.size(0), -1)
+            exp_parameters = self.expression_encoder.expression_layers(exp_parameters)
 
             outputs['expression_params'] = exp_parameters[...,:self.n_exp]
             outputs['expression_residuals_final'] = exp_residuals_final
