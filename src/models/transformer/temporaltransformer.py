@@ -107,7 +107,7 @@ class TemporalTransformer(nn.Module):
         # x = torch.cat((start_tok, x, stop_tok), dim=-2)  # (B, S+2, D)
 
         # pad attention mask for the two new tokens
-        attention_mask = pad(attention_mask, (1, 1), value=False)
+        # attention_mask = pad(attention_mask, (1, 1), value=False)
 
         # — transformer backbone —
         for blk in self.attention_blocks:
