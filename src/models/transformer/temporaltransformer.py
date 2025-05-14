@@ -109,9 +109,9 @@ class TemporalTransformer(nn.Module):
         for blk in self.attention_blocks:
             x = blk(x, src_key_padding_mask=attention_mask)
 
-        # — optional dropout (only on ordinary tokens) —
-        if self.final_dropout is not None:
-            x[:, 1:S+1, :] = self.final_dropout(x[:, 1:S+1, :])
+        # # — optional dropout (only on ordinary tokens) —
+        # if self.final_dropout is not None:
+        #     x[:, 1:S+1, :] = self.final_dropout(x[:, 1:S+1, :])
 
         # remove special tokens from output
         seq_out = x[:, 1:S+1, :]  # drop <START> and <STOP>
