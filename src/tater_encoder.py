@@ -480,12 +480,12 @@ class TATEREncoder(SmirkEncoder):
             # if self.exp_use_audio:
             #     exp_residual_down += self.residual_linear(exp_video_residual)
 
-            # updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
-            #     base_encoding,
-            #     exp_residual_down,
-            #     series_len,
-            #     og_series_len
-            # )
+            updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
+                torch.zeros_like(base_encoding).to(base_encoding.device),
+                exp_residual_down,
+                series_len,
+                og_series_len
+            )
             updated_exp_encodings_all = exp_residual_down
             exp_residuals_final = None
 
