@@ -408,6 +408,7 @@ class TATEREncoder(SmirkEncoder):
                 base_encoding = self.expression_encoder(img_cat)
                 base_encoding = torch.cat(list(base_encoding.values()), dim=-1)
                 base_encoding_test = self.expression_encoder.encoder(img_cat)
+                base_encoding_test = F.adaptive_avg_pool2d(base_encoding_test[-1], (1, 1)).squeeze(-1).squeeze(-1)
             else:
                 base_encoding = self.expression_encoder.encoder(img_cat)
                 base_encoding = F.adaptive_avg_pool2d(base_encoding[-1], (1, 1)).squeeze(-1).squeeze(-1)
@@ -484,7 +485,7 @@ class TATEREncoder(SmirkEncoder):
             #     exp_residual_down += self.residual_linear(exp_video_residual)
 
             updated_exp_encodings_all, exp_residuals_final = self.add_residual_to_encodings(
-                torch.zeros_like(base_encoding).to(base_encoding.device),
+                torch.zeros_like(base_encoding_test).to(base_encoding.device),
                 exp_residual_down,
                 series_len,
                 og_series_len
