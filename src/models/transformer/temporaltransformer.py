@@ -54,30 +54,30 @@ class TemporalTransformer(nn.Module):
 
         self._init_identity()
 
-    def _init_identity(self):
-        # For each TransformerEncoderLayer, zero out its
-        # self-attention + feed-forward so that only the
-        # residual remains, and set LayerNorm → y = x
+    def _init_identity(self, epsilon: float = 1e-6):
         for blk in self.attention_blocks:
-            # zero-out the QKV + output proj weights & biases
-            blk.self_attn.in_proj_weight.data.zero_()
+            # — shut off dropout so there's no random masking —
+            for attr in ("dropout", "dropout1", "dropout2", "activation_dropout"):
+                if hasattr(blk, attr):
+                    getattr(blk, attr).p = 0.0
+
+            # — self-attention: tiny random weights around 0 —
+            blk.self_attn.in_proj_weight.data.normal_(mean=0.0, std=epsilon)
             blk.self_attn.in_proj_bias.data.zero_()
-            blk.self_attn.out_proj.weight.data.zero_()
+            blk.self_attn.out_proj.weight.data.normal_(mean=0.0, std=epsilon)
             blk.self_attn.out_proj.bias.data.zero_()
-            # zero-out the feed-forward MLP
-            blk.linear1.weight.data.zero_()
+
+            # — feed-forward MLP: tiny random weights around 0 —
+            blk.linear1.weight.data.normal_(mean=0.0, std=epsilon)
             blk.linear1.bias.data.zero_()
-            blk.linear2.weight.data.zero_()
+            blk.linear2.weight.data.normal_(mean=0.0, std=epsilon)
             blk.linear2.bias.data.zero_()
-            # layer norms as identity: y = 1·x + 0
+
+            # — layer norms exactly identity —
             blk.norm1.weight.data.fill_(1.0)
             blk.norm1.bias.data.zero_()
             blk.norm2.weight.data.fill_(1.0)
             blk.norm2.bias.data.zero_()
-
-            # replace LayerNorms with Identity → no mean/var shift
-            blk.norm1 = nn.Identity()
-            blk.norm2 = nn.Identity()
 
     # ------------------------------------------------------------------
     def forward(self,
