@@ -55,29 +55,34 @@ class TemporalTransformer(nn.Module):
         self._init_identity()
 
     def _init_identity(self, epsilon: float = 1e-6):
+        # ── 1) Make your final projection head ≈ identity ─────────────────
+        #   (so res_out(x) ≈ x + O(epsilon) but bias is trainable)
+        nn.init.eye_(self.res_out.weight)
+        self.res_out.bias.data.normal_(mean=0.0, std=epsilon)
+
         for blk in self.attention_blocks:
-            # — shut off dropout so there's no random masking —
-            for attr in ("dropout", "dropout1", "dropout2", "activation_dropout"):
+            # ── 2) Turn off every dropout in TransformerEncoderLayer ────────
+            for attr in ("dropout1", "dropout2", "activation_dropout"):
                 if hasattr(blk, attr):
                     getattr(blk, attr).p = 0.0
 
-            # — self-attention: tiny random weights around 0 —
+            # ── 3) Self-attention: tiny random weights & biases ───────────
             blk.self_attn.in_proj_weight.data.normal_(mean=0.0, std=epsilon)
-            blk.self_attn.in_proj_bias.data.zero_()
+            blk.self_attn.in_proj_bias .data.normal_(mean=0.0, std=epsilon)
             blk.self_attn.out_proj.weight.data.normal_(mean=0.0, std=epsilon)
-            blk.self_attn.out_proj.bias.data.zero_()
+            blk.self_attn.out_proj.bias  .data.normal_(mean=0.0, std=epsilon)
 
-            # — feed-forward MLP: tiny random weights around 0 —
+            # ── 4) Feed-forward MLP: tiny random weights & biases ─────────
             blk.linear1.weight.data.normal_(mean=0.0, std=epsilon)
-            blk.linear1.bias.data.zero_()
+            blk.linear1.bias  .data.normal_(mean=0.0, std=epsilon)
             blk.linear2.weight.data.normal_(mean=0.0, std=epsilon)
-            blk.linear2.bias.data.zero_()
+            blk.linear2.bias  .data.normal_(mean=0.0, std=epsilon)
 
-            # — layer norms exactly identity —
+            # ── 5) LayerNorms → exact identity but trainable if you want to unfreeze later
             blk.norm1.weight.data.fill_(1.0)
-            blk.norm1.bias.data.zero_()
+            blk.norm1.bias  .data.zero_()
             blk.norm2.weight.data.fill_(1.0)
-            blk.norm2.bias.data.zero_()
+            blk.norm2.bias  .data.zero_()
 
     # ------------------------------------------------------------------
     def forward(self,

@@ -116,7 +116,7 @@ def train(rank, world_size, config):
         train_loader.sampler.set_epoch(epoch)
         trainer.module.configure_optimizers(effective_seg_count, epoch != 0)
 
-        for phase in ['train', 'val']:
+        for phase in ['train']:
             loader = train_loader if phase == 'train' else val_loader
             for batch_idx, batch in tqdm(enumerate(loader), total=len(loader), desc=f"Rank {rank} Progress", position=rank):                
                 try:
