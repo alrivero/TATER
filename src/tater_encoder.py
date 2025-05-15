@@ -472,6 +472,7 @@ class TATEREncoder(SmirkEncoder):
                 # print(kill_me_lol)
                 exp_residual_out, exp_class, exp_video_residual, exp_video_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
             else:
+                import pdb; pdb.set_trace()
                 exp_residual_out, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
 
             outputs['expression_residuals_down'] = exp_residual_out
