@@ -31,6 +31,7 @@ class TemporalTransformer(nn.Module):
                 dropout          = 0.0,
                 layer_norm_eps   = conf.attention.layer_norm_eps,
                 batch_first      = True,
+                norm_first      = True,
                 activation       = nn.LeakyReLU(0.01, inplace=False),
             )
             for _ in range(self.num_layers)
