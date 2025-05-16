@@ -378,7 +378,7 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         s = int(s)
 
         start = int(start)
-        end = int(end)
+        end = min(start + 40, int(end))
         # rand_int = random.randint(start, end - 2)
 
         # start = rand_int

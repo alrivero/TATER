@@ -498,7 +498,7 @@ class TATEREncoder(SmirkEncoder):
             else:
                 exp_parameters = updated_exp_encodings_all
 
-            exp_parameters = exp_parameters.reshape(exp_parameters.size(0), -1)
+            exp_parameters = exp_parameters.reshape(-1, exp_parameters.size(-1))
             exp_parameters = self.expression_encoder.expression_layers(exp_parameters)
 
             outputs['expression_params'] = exp_parameters[...,:self.n_exp]
