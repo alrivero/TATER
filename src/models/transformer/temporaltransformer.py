@@ -88,41 +88,37 @@ class TemporalTransformer(nn.Module):
     # ------------------------------------------------------------------
     def forward(self,
                 x: torch.Tensor,              # (B, S, D)
-                attention_mask: torch.Tensor, # (B, S)  True ⇒ masked
-                series_len    = None,
-                token_mask    = None):
-        """
-        Returns
-        -------
-        seq_out : (B, S, D)  – per‑token embeddings (special tokens removed)
-        None    : placeholder so call‑sites remain compatible
-        """
+                attention_mask: torch.Tensor, # (B, S)  True ⇒ masked
+                series_len=None,
+                token_mask=None):
         B, S, D = x.shape
 
-        # — positional encoding —
-        if False: # self.positional_embedding is not None:
-            x = self.positional_embedding(x, series_len=series_len)
+        # 1) Positional encoding
+        if self.positional_embedding is not None:
+            x = self.positional_embedding(x)
 
-        # — optional random token masking —
+        # 2) Token-level corruption
         if token_mask is not None:
             x[token_mask] = self.mask_token
 
-        # # — prepend <START> and append <STOP> —
-        # start_tok = self.start_token.expand(B, 1, -1)
-        # stop_tok  = self.stop_token .expand(B, 1, -1)
-        # x = torch.cat((start_tok, x, stop_tok), dim=-2)  # (B, S+2, D)
+        # 3) Add <START> and <STOP>
+        start_tok = self.start_token.unsqueeze(0).expand(B, 1, D)
+        stop_tok  = self.stop_token .unsqueeze(0).expand(B, 1, D)
+        x = torch.cat([start_tok, x, stop_tok], dim=1)  # (B, S+2, D)
 
-        # pad attention mask for the two new tokens
-        # attention_mask = pad(attention_mask, (1, 1), value=False)
+        # 4) Pad the padding-mask
+        attention_mask = pad(attention_mask, (1,1), value=False)  # (B, S+2)
 
-        # — transformer backbone —
+        # 5) Backbone
         for blk in self.attention_blocks:
             x = blk(x, src_key_padding_mask=attention_mask)
 
-        # # — optional dropout (only on ordinary tokens) —
-        # if self.final_dropout is not None:
-        #     x[:, 1:S+1, :] = self.final_dropout(x[:, 1:S+1, :])
+        # 6) Slice out the original tokens
+        core = x[:, 1 : S+1, :]  # (B, S, D)
 
-        # remove special tokens from output
-        seq_out = x # [:, 1:S+1, :]  # drop <START> and <STOP>
-        return seq_out, None
+        # # 7) Optional dropout + projection
+        # if self.final_dropout is not None:
+        #     core = self.final_dropout(core)
+        # core = self.res_out(core)
+
+        return core, None

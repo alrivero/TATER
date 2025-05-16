@@ -379,10 +379,10 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
 
         start = int(start)
         end = int(end)
-        rand_int = random.randint(start, end - 2)
+        # rand_int = random.randint(start, end - 2)
 
-        start = rand_int
-        end = rand_int + 1
+        # start = rand_int
+        # end = rand_int + 1
 
         video_group = self._get_hdf5_file(int(v))[str(s)]
         video_dict = {}
