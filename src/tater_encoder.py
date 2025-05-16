@@ -490,15 +490,12 @@ class TATEREncoder(SmirkEncoder):
                 series_len,
                 og_series_len
             )
-            updated_exp_encodings_all = exp_residual_down
-            exp_residuals_final = None
 
             if False: # self.apply_linear_after_res and self.use_exp_linear:
                 exp_parameters = self.exp_layer(updated_exp_encodings_all)
             else:
                 exp_parameters = updated_exp_encodings_all
 
-            exp_parameters = exp_parameters.reshape(-1, exp_parameters.size(-1))
             exp_parameters = self.expression_encoder.expression_layers(exp_parameters)
 
             outputs['expression_params'] = exp_parameters[...,:self.n_exp]
