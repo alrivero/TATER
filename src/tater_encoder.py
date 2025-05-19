@@ -526,8 +526,8 @@ class TATEREncoder(SmirkEncoder):
             base_shape_encoding = [x[:o].mean(dim=0)[None].expand(o, -1) for x, o in zip(base_shape_encoding, og_series_len)]
             base_shape_encoding = torch.cat(base_shape_encoding)
 
-            if self.use_shape_linear_downsample:
-                shape_encodings_all = self.shape_layer_down(shape_encodings_all)
+            # if self.use_shape_linear_downsample:
+            #     shape_encodings_all = self.shape_layer_down(shape_encodings_all)
         
             shape_encodings_down, attention_mask, series_len = self.pad_and_create_mask(
                 shape_encodings_all,
@@ -543,7 +543,7 @@ class TATEREncoder(SmirkEncoder):
 
             # print(base_shape_encoding.unique(), shape_residual_flame.unique())
 
-            shape_parameters = base_shape_encoding + shape_residual_flame
+            shape_parameters = shape_residual_flame
 
             # print(shape_parameters.unique())
             # print("\n")
@@ -551,8 +551,6 @@ class TATEREncoder(SmirkEncoder):
             outputs['shape_params'] = shape_parameters
             outputs['shape_residuals_down'] = shape_residual_down
             outputs['res_series_len'] = series_len
-
-            shape_parameters.sum()
         
         if self.use_base_pose:
             outputs.update(self.pose_encoder(img_cat))
