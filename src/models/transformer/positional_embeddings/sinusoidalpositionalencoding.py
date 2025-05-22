@@ -5,21 +5,19 @@ import numpy as np
 import torch.nn as nn
 
 class SinusoidalPositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=20000):
-        super(SinusoidalPositionalEncoding, self).__init__()
-        # Compute the positional encodings once in log space.
-        pe = torch.zeros(max_len, d_model).float()
-        pe.require_grad = False
+    def __init__(self, d_model, max_len=5000, init_std=1e-5):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(0, max_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2).float()
+                        * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe.unsqueeze(0))          # (1, max_len, D)
 
-        position = torch.arange(0, max_len).float().unsqueeze(1)
-        div_term = (torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)).exp()
+        # learnable per-dimension scale, tiny non-zero init
+        self.alpha = nn.Parameter(torch.empty(d_model))
+        nn.init.normal_(self.alpha, mean=0.0, std=init_std)  # ≈ identity
 
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x, **kwargs):
-        # print(x.shape, self.pe.shape, x.size(1))
-        return x + self.pe[:, :x.size(1)]
+    def forward(self, x):                                    # x: (B, S, D)
+        return x + self.alpha * self.pe[:, :x.size(1)]
