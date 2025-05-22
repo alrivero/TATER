@@ -338,7 +338,7 @@ class CARAAffectTrainer(BaseTrainer):
         ccc_l = self.ccc_loss(affect_scores, affect_scores_gt)
 
         # mix them: λ_cc*(1-CCC) + (1-λ_cc)*Huber
-        λ_cc = 0.375
+        λ_cc = 0.1
         loss = λ_cc * ccc_l + (1 - λ_cc) * huber
 
         # log metrics
@@ -437,14 +437,6 @@ class CARAAffectTrainer(BaseTrainer):
             # stick it into outputs for logging/printing downstream
             losses['grad_norm_total'] = total_grad_norm
             # ————————————————————————————————
-
-            # gradient clipping
-            max_norm = 1.0
-            torch.nn.utils.clip_grad_norm_(
-                itertools.chain(self.tater.parameters(),
-                                self.affect_decoder.parameters()),
-                max_norm
-            )
             
             if (batch_idx + 1) % self.accumulate_steps == 0:
                 self.optimizers_step(step_encoder=True, step_fuse_generator=True)  # Apply accumulated gradients
