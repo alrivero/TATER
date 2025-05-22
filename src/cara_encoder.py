@@ -54,9 +54,9 @@ class CARAEncoder(TATEREncoder):
                 sample_rate=self.downsample_rate
             )
 
-            exp_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
+            _, exp_class = self.exp_transformer(exp_encodings_down, audio_encodings_down, attention_mask, series_len, token_mask)
         else:
-            exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
+            _, exp_class = self.exp_transformer(exp_encodings_down, attention_mask, series_len, token_mask)
         
         # outputs["exp_residual_out"] = exp_residual_out
         outputs["exp_class"] = exp_class
