@@ -248,7 +248,15 @@ def train(rank, world_size, config):
         wandb.finish()
     dist.destroy_process_group()
 
-if __name__=='__main__':
-    config     = parse_args()
+if __name__ == "__main__":
+    cfg = parse_args()
+
+    # ───── ONE‑GPU DEBUG MODE ─────────────────────────────────────
+    # export DEBUG_ONE=1 before running → everything happens in‑process
+    if os.getenv("DEBUG_ONE") == "1":          # ❶ add this
+        train(rank=0, world_size=1, config=cfg)  # ❷ and this
+        sys.exit(0)
+    # ──────────────────────────────────────────────────────────────
+
     world_size = torch.cuda.device_count()
-    mp.spawn(train, args=(world_size,config), nprocs=world_size)
+    mp.spawn(train, nprocs=world_size, args=(world_size, cfg))

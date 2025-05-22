@@ -482,7 +482,7 @@ class CARAAffectTrainer(BaseTrainer):
             print(f"Skipped loading weights for {len(skipped_keys)} keys due to shape mismatches: {skipped_keys}")
 
         # Remove the shape and pose encoders
-        del self.tater.shape_transformer
+        # del self.tater.shape_transformer
         # del self.tater.pose_transformer
 
     def save_model(self, state_dict, save_path):
