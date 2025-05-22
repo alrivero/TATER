@@ -12,10 +12,10 @@ train:
   max_lr: 3.0e-05
   iterations_until_max_lr: 60000
   num_epochs: 10
-  batch_size: 24
+  batch_size: 8
   accumulate_steps: 1
   num_workers: 2
-  log_path: logs/train_audio_video_affect
+  log_path: logs/train_affect_multiple
   log_losses_every: 5
   visualize_every: 50
   mask_ratio: 0.0125
@@ -100,37 +100,29 @@ arch:
     apply_linear_after_res: false
     Expression:
       use_base_encoder: false
-      use_audio: true
+      use_audio: false
       use_latent: true
       use_linear: true
-      linear_size: 320
-      use_linear_downsample: true
+      linear_size: 960
+      use_linear_downsample: false
       add_to_flame: true
       init_near_zero: false
       init_scale: 1.0e-09
       pretrain_path: ''
-      CrossAttentionTransformer:
+      Transformer:
         positional_embedding: Sinusoidal
         num_layers: 3
-        cross_layers: 1
-        concat_layers: 1
-        encoder_1_mask_rate: 1.0
-        encoder_2_mask_rate: 0.8
         final_dropout:
           enable: false
           prob: 0.1
         attention:
-          d_model_1: 320
-          d_model_2: 320
-          d_model_C: 640
-          dim_feedforward_1: 640
-          dim_feedforward_2: 640
-          dim_feedforward_C: 640
+          hidden_size: 960
+          hidden_size_2: 1920
           num_attention_heads: 4
-          dropout: 0.1
+          attention_probs_dropout_prob: 0.1
           layer_norm_eps: 1.0e-12
     Shape:
-      use_base_encoder: false
+      use_base_encoder: true
       use_linear: true
       use_latent: true
       add_to_flame: true
@@ -176,7 +168,7 @@ arch:
     text_emb_size: 768
 
     Affect_Decoder:
-        linear_size: 640
+        linear_size: 1920
   Phoneme_Classifier:
     enable: false
     type: Linear
@@ -199,27 +191,29 @@ dataset:
   iHiTOP:
     hdf5_path: /local/PTSD_STOP/iHiTOP_Preprocessed/data
     frame_step: 1
-    max_data_idxs: 360000
+    max_data_idxs: 190672
 
     # Data culling parameters
     removed_frames_threshold: 0.1
     max_seg_len: 9999999
     min_seg_len: 9
-    data_idxs: /local/PTSD_STOP/TATER/data_idxs/all_data_idxs_affect_300K_v2.npy
+    data_idxs: /local/PTSD_STOP/TATER/data_idxs/all_data_idxs_affect_300K_v3.npy
     # all_seg_idxs: /local/PTSD_STOP/TATER/data_idxs/all_seg_idxs_F3.npy
     # effective_seg_count: /local/PTSD_STOP/TATER/data_idxs/all_data_count_F3.npy
-    final_idxs_train: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_FINAL_affect_train_v2.npy
-    final_idxs_val: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_val_v2.npy
-    final_idxs_test: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_test_v2.npy
-    final_mask_train: /local/PTSD_STOP_pk/train_mask_affect_v2.npy
-    final_mask_val: /local/PTSD_STOP_pk/val_mask_affect_v2.npy
-    final_mask_test: /local/PTSD_STOP_pk/test_mask_affect_v2.npy
-    bad_files: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_bad_files_v2.npy
+    final_idxs_val: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_val_v3.npy
+    final_idxs_train: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_train_v3.npy
+    final_idxs_test: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_test_v3.npy
+    final_mask_train: /local/PTSD_STOP_pk/train_mask_affect_v3.npy
+    final_mask_val: /local/PTSD_STOP_pk/val_mask_affect_v3.npy
+    final_mask_test: /local/PTSD_STOP_pk/test_mask_affect_v3.npy
+    bad_files: /local/PTSD_STOP/TATER/final_idxs/all_data_idxs_affect_300K_bad_files_v3.npy
 
-    # percentage of data to use for train val test
-    train_percentage: 0.84
-    val_percentage: 0.08
-    test_percentage: 0.08
+    valence_transform: /local/PTSD_STOP/iHiTOP_Preprocessed/quantile_transforms/valence/quantile_transformer.pkl
+    arousal_transform: /local/PTSD_STOP/iHiTOP_Preprocessed/quantile_transforms/arousal/quantile_transformer.pkl
+
+    train_percentage: 0.90
+    val_percentage: 0.05
+    test_percentage: 0.05
   VOCASET:
     data_path: /home/arivero/VOCA
     frame_step: 1

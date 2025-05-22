@@ -115,6 +115,7 @@ def train(rank, world_size, config):
     else:
         val_tf = aro_tf = None
 
+
     # 8) training loop
     for epoch in range(config.train.resume_epoch, config.train.num_epochs):
         train_loader.sampler.set_epoch(epoch)
