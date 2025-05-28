@@ -7,6 +7,9 @@ import src.utils.utils as utils
 import scipy.stats
 import math
 
+from contextlib import nullcontext
+import itertools
+
 from torch import nn
 from src.base_trainer import BaseTrainer 
 from .base_trainer import BaseTrainer
@@ -386,27 +389,30 @@ class CARAAffectTrainer(BaseTrainer):
         return outputs
 
     def step(self, batch, batch_idx, epoch, phase='train', ddp_model=None):
+        # ——— 0) train vs. eval modes ———
         if phase == 'train':
             self.train()
             torch.set_grad_enabled(True)
         else:
             self.eval()
             torch.set_grad_enabled(False)
+
+        # ——— 1) forward pass prep & compute ———
         series_len = [b.shape[0] for b in batch["img"]]
 
         token_mask = None
         if self.token_masking is not None and phase == "train":
-            token_mask, effective_masking_rate = self.generate_phoneme_token_mask(batch, series_len)
-        
-        audio_mask = None
-        video_mask = None
+            token_mask, effective_masking_rate = \
+                self.generate_phoneme_token_mask(batch, series_len)
+
+        audio_mask = video_mask = None
         if self.modality_dropout and phase == "train":
-            audio_mask, video_mask = self.generate_audio_video_mask(batch, series_len)
-    
+            audio_mask, video_mask = \
+                self.generate_audio_video_mask(batch, series_len)
+
         if self.tater.exp_use_audio:
             encode_feat = self.tater(
-                batch["img"],
-                series_len,
+                batch["img"], series_len,
                 audio_batch=batch["audio_feat"],
                 token_mask=token_mask,
                 video_mask=video_mask,
@@ -414,39 +420,52 @@ class CARAAffectTrainer(BaseTrainer):
             )
         else:
             encode_feat = self.tater(batch["img"], series_len, token_mask)
-    
-        affect_scores = self.affect_decoder(encode_feat["exp_class"])
-        outputs, losses, loss = self.step1(batch, affect_scores, batch_idx, series_len)
 
+        affect_scores = self.affect_decoder(encode_feat["exp_class"])
+        outputs, losses, loss = self.step1(
+            batch, affect_scores, batch_idx, series_len
+        )
         if self.token_masking is not None:
             losses["mask_rate"] = effective_masking_rate
 
+        # ——— 2) gradient‐accumulation + DDP handling ———
         if phase == 'train':
-            # zero at start of each virtual batch
+            # pick your DDP wrapper if provided, else fallback
+            ddp_wrapper = ddp_model if (ddp_model is not None and hasattr(ddp_model, 'no_sync')) else None
+
+            # zero only at the start of each "virtual" batch
             if batch_idx % self.accumulate_steps == 0:
                 self.optimizers_zero_grad()
 
-            # choose sync/no_sync based on micro-batch index
-            do_sync = ((batch_idx + 1) % self.accumulate_steps == 0)
-            backward_ctx = ddp_model.no_sync if not do_sync else torch.enable_grad  # sync only on last
+            # determine if this is the last micro‐batch
+            is_last_micro = ((batch_idx + 1) % self.accumulate_steps == 0)
+            if ddp_wrapper:
+                # suppress all‐reduce on all but the last
+                ctx = ddp_wrapper.no_sync() if not is_last_micro else nullcontext()
+            else:
+                ctx = nullcontext()
 
-            with backward_ctx():
-                # optional: scale the loss so LR feels the same
+            with ctx:
+                # optional scaling so grad magnitudes don't blow up
                 loss = loss / self.accumulate_steps
                 loss.backward()
 
-            # ——— your grad-norm logging stays here ———
+            # ——— 3) gradient‐norm logging ———
             total_norm_sq = 0.0
-            for p in itertools.chain(self.tater.parameters(), self.affect_decoder.parameters()):
+            for p in itertools.chain(
+                self.tater.parameters(),
+                self.affect_decoder.parameters()
+            ):
                 if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm_sq += param_norm.item() ** 2
+                    total_norm_sq += p.grad.data.norm(2).item() ** 2
             losses['grad_norm_total'] = total_norm_sq ** 0.5
-            # ————————————————————————————————
 
-            # ←— MOVE: step & scheduler only once per accumulate_steps
-            if (batch_idx + 1) % self.accumulate_steps == 0:
-                self.optimizers_step(step_encoder=True, step_fuse_generator=True)
+            # ——— 4) step & scheduler only on the last microbatch ———
+            if is_last_micro:
+                self.optimizers_step(
+                    step_encoder=True,
+                    step_fuse_generator=True
+                )
                 self.scheduler_step()
                 self.global_step += 1
 
@@ -454,9 +473,12 @@ class CARAAffectTrainer(BaseTrainer):
             self.tater.update_residual_scale(iteration)
             self.logging(batch_idx, losses, phase)
 
-        outputs['base_encode'] = encode_feat['base_encode']
+        # ——— 5) finalize outputs ———
+        outputs['base_encode']         = encode_feat['base_encode']
         outputs["valence_arousal_out"] = affect_scores
-        outputs["valence_arousal_gt"] = torch.cat([x[None] for x in batch["valence_arousal"]])
+        outputs["valence_arousal_gt"]  = torch.cat(
+            [x[None] for x in batch["valence_arousal"]]
+        )
         return outputs
 
     def load_model(self, resume, load_fuse_generator=True, load_encoder=True, device='cuda', strict_load=False):
