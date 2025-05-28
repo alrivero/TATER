@@ -422,30 +422,37 @@ class CARAAffectTrainer(BaseTrainer):
             losses["mask_rate"] = effective_masking_rate
 
         if phase == 'train':
-            self.optimizers_zero_grad()  # Zero the gradients
-            loss.backward()  # Accumulate gradients
+            # zero at start of each virtual batch
+            if batch_idx % self.accumulate_steps == 0:
+                self.optimizers_zero_grad()
 
-            # ——— NEW: compute gradient norms ———
+            # choose sync/no_sync based on micro-batch index
+            ddp_model = self  # assuming `self` is already the DDP-wrapped module
+            do_sync = ((batch_idx + 1) % self.accumulate_steps == 0)
+            backward_ctx = ddp_model.no_sync if not do_sync else torch.enable_grad  # sync only on last
+
+            with backward_ctx():
+                # optional: scale the loss so LR feels the same
+                loss = loss / self.accumulate_steps
+                loss.backward()
+
+            # ——— your grad-norm logging stays here ———
             total_norm_sq = 0.0
-            # iterate over all parameters you care about
             for p in itertools.chain(self.tater.parameters(), self.affect_decoder.parameters()):
                 if p.grad is not None:
-                    # L2 norm of this param's gradient
                     param_norm = p.grad.data.norm(2)
                     total_norm_sq += param_norm.item() ** 2
-            total_grad_norm = total_norm_sq ** 0.5
-            # stick it into outputs for logging/printing downstream
-            losses['grad_norm_total'] = total_grad_norm
+            losses['grad_norm_total'] = total_norm_sq ** 0.5
             # ————————————————————————————————
-            
+
+            # ←— MOVE: step & scheduler only once per accumulate_steps
             if (batch_idx + 1) % self.accumulate_steps == 0:
-                self.optimizers_step(step_encoder=True, step_fuse_generator=True)  # Apply accumulated gradients
-                self.scheduler_step()  # Step the scheduler
-                self.global_step += 1  # Increment global step
-            
+                self.optimizers_step(step_encoder=True, step_fuse_generator=True)
+                self.scheduler_step()
+                self.global_step += 1
+
             iteration = batch_idx if epoch == 0 else -1
             self.tater.update_residual_scale(iteration)
-
             self.logging(batch_idx, losses, phase)
 
         outputs['base_encode'] = encode_feat['base_encode']
