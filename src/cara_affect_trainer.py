@@ -338,7 +338,7 @@ class CARAAffectTrainer(BaseTrainer):
         ccc_l = self.ccc_loss(affect_scores, affect_scores_gt)
 
         # mix them: λ_cc*(1-CCC) + (1-λ_cc)*Huber
-        λ_cc = 0.1
+        λ_cc = 0.0
         loss = λ_cc * ccc_l + (1 - λ_cc) * huber
 
         # log metrics
