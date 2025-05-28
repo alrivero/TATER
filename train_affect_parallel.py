@@ -139,7 +139,7 @@ def train(rank, world_size, config):
                         elif torch.is_tensor(v):
                             batch[k] = v.to(rank)
 
-                    out = trainer.module.step(batch, batch_idx, epoch, phase=phase)
+                    out = trainer.module.step(batch, batch_idx, epoch, phase=phase, ddp_model=trainer)
 
                     if rank == 0 and phase == 'train' and batch_idx % config.train.visualize_every == 0:
                         wandb.log({'epoch':epoch,'batch_idx':batch_idx})

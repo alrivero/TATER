@@ -385,7 +385,7 @@ class CARAAffectTrainer(BaseTrainer):
 
         return outputs
 
-    def step(self, batch, batch_idx, epoch, phase='train'):
+    def step(self, batch, batch_idx, epoch, phase='train', ddp_model=None):
         if phase == 'train':
             self.train()
             torch.set_grad_enabled(True)
@@ -427,7 +427,6 @@ class CARAAffectTrainer(BaseTrainer):
                 self.optimizers_zero_grad()
 
             # choose sync/no_sync based on micro-batch index
-            ddp_model = self  # assuming `self` is already the DDP-wrapped module
             do_sync = ((batch_idx + 1) % self.accumulate_steps == 0)
             backward_ctx = ddp_model.no_sync if not do_sync else torch.enable_grad  # sync only on last
 
