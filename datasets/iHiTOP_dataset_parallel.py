@@ -406,8 +406,8 @@ class iHiTOPDatasetParallel(BaseVideoDataset):
         video_dict["video_ID"] = v
 
         v_raw, a_raw = video_group["valence_arousal"][()]
-        v_scaled = float(self.val_tf.transform([[v_raw]])[0,0])
-        a_scaled = float(self.aro_tf.transform([[a_raw]])[0,0])
+        v_scaled = (v_raw - VALENCE_AVG) / VALENCE_STD
+        a_scaled = (a_raw - AROUSAL_AVG) / AROUSAL_STD
         video_dict["valence_arousal"] = torch.tensor([v_scaled, a_scaled], dtype=torch.float32)
 
         # Gather all image data (subsample every N frames within start:end)
