@@ -1037,13 +1037,13 @@ def get_datasets_iHiTOP_parallel(config=None):
     valid_test = []
 
     for values in train_idxs:
-        if values[-2] - values[-1] <= 150:
+        if values[-1] - values[-2] <= 150:
             valid_train.append(values)
     for values in val_idxs:
-        if values[-2] - values[-1] <= 150:
+        if values[-1] - values[-2] <= 150:
             valid_val.append(values)
     for values in test_idxs:
-        if values[-2] - values[-1] <= 150:
+        if values[-1] - values[-2] <= 150:
             valid_test.append(values)
     
     train_idxs = valid_train
