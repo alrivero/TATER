@@ -1032,6 +1032,24 @@ def get_datasets_iHiTOP_parallel(config=None):
     # val_idxs = val_idxs[val_mask]
     # test_idxs = test_idxs[test_mask]
 
+    valid_train = []
+    valid_val = []
+    valid_test = []
+
+    for values in train_idxs:
+        if values[-2] - values[-1] <= 150:
+            valid_train.append(values)
+    for values in val_idxs:
+        if values[-2] - values[-1] <= 150:
+            valid_val.append(values)
+    for values in test_idxs:
+        if values[-2] - values[-1] <= 150:
+            valid_test.append(values)
+    
+    train_idxs = valid_train
+    val_idxs = valid_val
+    test_idxs = valid_test
+
     return (
         iHiTOPDatasetParallel(hdf5_file_paths, train_idxs, config, test=False),
         iHiTOPDatasetParallel(hdf5_file_paths, val_idxs, config, test=True),
